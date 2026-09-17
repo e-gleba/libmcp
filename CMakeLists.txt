@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 4.3)
 
 project(
-    cmake_template
+    libmcp
     VERSION 1.0.1
-    DESCRIPTION "Production-ready cross-platform C++ project template"
-    HOMEPAGE_URL "https://github.com/e-gleba/cmake_template"
+    DESCRIPTION
+        "Production-ready cross-platform C++ modelcontextprotocol library"
+    HOMEPAGE_URL "https://github.com/e-gleba/libmcp"
     LANGUAGES C CXX)
 
 # No C++20 modules in use — do not pay for the module dependency scan.
@@ -39,6 +40,8 @@ endif()
 
 include(GNUInstallDirs)
 add_subdirectory(src)
+
+add_subdirectory(examples)
 
 # Testing and packaging only run when this project owns the build. A parent
 # project pulling us in via add_subdirectory()/FetchContent controls both

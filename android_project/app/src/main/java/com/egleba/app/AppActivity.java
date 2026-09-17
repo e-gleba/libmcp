@@ -6,7 +6,7 @@ public class AppActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
         return new String[]{
-                "02_sdl3_app"
+                "piped_mcp"
         };
     }
 }

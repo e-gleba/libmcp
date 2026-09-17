@@ -39,13 +39,24 @@ file(
     ONLY_IF_DIFFERENT)
 file(REMOVE "${mcp_ts}.tmp")
 
-if(NOT EXISTS "${mcp_hpp}" OR "${mcp_ts}" IS_NEWER_THAN "${mcp_hpp}")
-    execute_process(
-        COMMAND
-            "${npm_executable}" exec --yes -- quicktype --src-lang typescript
-            --lang c++ --code-format with-struct --out "${mcp_hpp}" "${mcp_ts}"
-            COMMAND_ERROR_IS_FATAL ANY)
-endif()
+execute_process(
+    COMMAND
+        "${npm_executable}" exec --yes -- quicktype --src-lang typescript
+        --lang c++ --code-format with-struct --out "${mcp_hpp}" "${mcp_ts}"
+        COMMAND_ERROR_IS_FATAL ANY)
+file(READ "${mcp_hpp}" mcp_content)
+string(
+    REPLACE [[#include "json.hpp"]]
+            [[#include <nlohmann/json.hpp>]]
+            mcp_content
+            "${mcp_content}")
+string(
+    REGEX
+    REPLACE [[using JsonValue = [^;]*;]]
+            [[using JsonValue = nlohmann::json;]]
+            mcp_content
+            "${mcp_content}")
+file(WRITE "${mcp_hpp}" "${mcp_content}")
 
 if(NOT TARGET mcp_schema)
     add_library(mcp_schema INTERFACE)
