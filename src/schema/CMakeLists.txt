@@ -1,5 +1,3 @@
-include(GNUInstallDirs)
-
 set(mcp_date
     "2026-07-28"
     CACHE STRING "MCP schema version")
@@ -9,6 +7,7 @@ set(mcp_src_dir
 
 set(mcp_dir "${mcp_src_dir}/${mcp_date}")
 set(mcp_ts "${mcp_dir}/schema.ts")
+set(mcp_full "${mcp_dir}/schema.full.hpp")
 set(mcp_hpp "${mcp_dir}/schema.hpp")
 set(mcp_url
     "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/${mcp_date}/schema.ts"
@@ -42,21 +41,70 @@ file(REMOVE "${mcp_ts}.tmp")
 execute_process(
     COMMAND
         "${npm_executable}" exec --yes -- quicktype --src-lang typescript
-        --lang c++ --code-format with-struct --out "${mcp_hpp}" "${mcp_ts}"
-        COMMAND_ERROR_IS_FATAL ANY)
-file(READ "${mcp_hpp}" mcp_content)
-string(
-    REPLACE [[#include "json.hpp"]]
-            [[#include <nlohmann/json.hpp>]]
-            mcp_content
-            "${mcp_content}")
-string(
-    REGEX
-    REPLACE [[using JsonValue = [^;]*;]]
-            [[using JsonValue = nlohmann::json;]]
-            mcp_content
-            "${mcp_content}")
-file(WRITE "${mcp_hpp}" "${mcp_content}")
+        --lang c++ --code-format with-struct --just-types --out "${mcp_full}"
+        "${mcp_ts}" COMMAND_ERROR_IS_FATAL ANY)
+
+file(STRINGS "${mcp_full}" mcp_lines)
+set(mcp_body "")
+set(in_helper OFF)
+set(in_jsonvalue OFF)
+foreach(line IN LISTS mcp_lines)
+    if(line MATCHES "#ifndef NLOHMANN_UNTYPED")
+        set(in_helper ON)
+        continue()
+    endif()
+    if(in_helper)
+        if(line MATCHES "#endif")
+            set(in_helper OFF)
+        endif()
+        continue()
+    endif()
+    if(line MATCHES "using JsonValue")
+        set(in_jsonvalue ON)
+        if(line MATCHES ";")
+            set(in_jsonvalue OFF)
+        endif()
+        continue()
+    endif()
+    if(in_jsonvalue)
+        if(line MATCHES ";")
+            set(in_jsonvalue OFF)
+        endif()
+        continue()
+    endif()
+    if(line MATCHES "^#pragma once")
+        continue()
+    endif()
+    if(line MATCHES "^#include")
+        continue()
+    endif()
+    if(line MATCHES "using nlohmann::json;")
+        continue()
+    endif()
+    string(
+        REPLACE "nlohmann::json"
+                "JsonValue"
+                line
+                "${line}")
+    set(mcp_body "${mcp_body}${line}\n")
+endforeach()
+
+file(
+    WRITE "${mcp_hpp}"
+    [[
+#pragma once
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <variant>
+#include <vector>
+#include <any>
+
+using JsonValue = std::any;
+]])
+file(APPEND "${mcp_hpp}" "${mcp_body}")
 
 if(NOT TARGET mcp_schema)
     add_library(mcp_schema INTERFACE)
@@ -73,8 +121,7 @@ if(NOT TARGET mcp_schema)
         mcp_schema SYSTEM
         INTERFACE $<BUILD_INTERFACE:${mcp_src_dir}>
                   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/mcp>)
-    target_link_libraries(
-        mcp_schema INTERFACE $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>)
+    target_compile_features(mcp_schema INTERFACE cxx_std_20)
     install(
         TARGETS mcp_schema
         EXPORT mcp_targets
@@ -87,12 +134,7 @@ if(NOT TARGET mcp_schema)
     file(
         WRITE "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
         [[
-include(CMakeFindDependencyMacro)
-find_dependency(nlohmann_json)
 include("${CMAKE_CURRENT_LIST_DIR}/mcp_targets.cmake")
-if(TARGET mcp::schema AND TARGET nlohmann_json::nlohmann_json)
-  target_link_libraries(mcp::schema INTERFACE nlohmann_json::nlohmann_json)
-endif()
 ]])
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
