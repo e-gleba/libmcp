@@ -1,0 +1,17 @@
+{
+    "$schema": "https://cmake.org/cmake/help/latest/_downloads/3e2d73bff478d88a7de0de736ba5e361/schema.json",
+    "version": 11,
+    "cmakeMinimumRequired": {
+        "major": 4,
+        "minor": 3,
+        "patch": 0
+    },
+    "include": [
+        "cmake/presets/base.json",
+        "cmake/presets/linux.json",
+        "cmake/presets/windows.json",
+        "cmake/presets/android.json",
+        "cmake/presets/web.json",
+        "cmake/presets/steam.json"
+    ]
+}

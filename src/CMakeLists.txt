@@ -1,0 +1,10 @@
+add_subdirectory(01_hello_world)
+add_subdirectory(02_sdl3_app)
+add_subdirectory(03_unity_build)
+
+add_subdirectory(04_tracy_profiler)
+add_subdirectory(05_webassembly)
+add_subdirectory(06_modules)
+
+# Piped MCP stdio implementation
+add_subdirectory(07_piped_mcp)

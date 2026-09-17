@@ -1,0 +1,282 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# One-click GitHub Release.
+#
+# Flow: validate inputs -> build packages (+ optional docker images) ->
+# create the GitHub Release -> open an auto-merged PR that bumps the
+# project() VERSION to next_version.
+#
+# The bump PR needs a token whose events start workflow runs — GITHUB_TOKEN
+# opens the PR fine but its CI never runs, so --auto waits forever. When
+# vars.RENOVATE_APP_ID + secrets.RENOVATE_APP_PRIVATE_KEY are configured
+# (same App as the renovate workflow) the bump uses the App token,
+# otherwise it falls back to GITHUB_TOKEN.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v1.0.0, or v1.0.0-rc.1 for a prerelease) — core must match project() VERSION in CMakeLists.txt"
+        required: true
+        type: string
+      next_version:
+        description: "Next project() VERSION, no v prefix (e.g. 1.0.1) — must exceed the current one in CMakeLists.txt; bot opens and auto-merges the bump PR"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        type: boolean
+        default: false
+      publish_docker:
+        description: "Build and push toolchain images to GHCR"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  # Fail fast on bad input before burning a full build matrix.
+  validate:
+    name: validate inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ inputs.version }}
+      NEXT_VERSION: ${{ inputs.next_version }}
+    steps:
+      - name: Validate input formats
+        run: |
+          if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version must look like v1.2.3 or v1.2.3-rc.1 (got '${VERSION}')"
+            exit 1
+          fi
+          if [[ ! "${NEXT_VERSION}" =~ ^[0-9]+\.[0-9]+\\.[0-9]+$ ]]; then
+            echo "::error::next_version must be plain semver, no v prefix (e.g. 1.0.1) — got '${NEXT_VERSION}'"
+            exit 1
+          fi
+
+      - name: Fail if tag already exists
+        run: |
+          if gh api "repos/${{ github.repository }}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "::error::tag ${VERSION} already exists"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: ./.github/actions/setup-cmake
+        with:
+          cache-key: unused
+          cache-cpm: "false"
+
+      - name: Check versions against project()
+        run: |
+          current=$(cmake -DPROJECT_FILE=CMakeLists.txt -P cmake/scripts/get_project_version.cmake | sed -n 's/^-- //p')
+          # VERSION passed the format check above, so the numeric core
+          # (the tag without any prerelease suffix) always matches.
+          [[ "${VERSION}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+) ]]
+          version_core="${BASH_REMATCH[1]}"
+          if [[ "${version_core}" != "${current}" ]]; then
+            printf "::error::release version core (%s) must match CMake project version (%s)\n" \
+              "${version_core}" "${current}"
+            exit 1
+          fi
+          if ! printf '%s\n%s\n' "${current}" "${NEXT_VERSION}" | sort -C -V \
+            || [[ "${current}" == "${NEXT_VERSION}" ]]; then
+            printf "::error::next_version (%s) must be greater than current project version (%s)\n" \
+              "${NEXT_VERSION}" "${current}"
+            exit 1
+          fi
+
+  docker:
+    name: docker
+    needs: validate
+    if: ${{ inputs.publish_docker }}
+    uses: ./.github/workflows/publish-docker.yml
+    with:
+      tag: ${{ inputs.version }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+  packages:
+    name: packages
+    needs: validate
+    uses: ./.github/workflows/cmake_multi_platform.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: github release
+    needs: [validate, docker, packages]
+    if: >-
+      !cancelled()
+      && needs.validate.result == 'success'
+      && needs.packages.result == 'success'
+      && (needs.docker.result == 'success' || needs.docker.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ inputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: release-assets/*
+
+      - name: Report release
+        run: echo "Created ${{ steps.release.outputs.url }}" >> "${GITHUB_STEP_SUMMARY}"
+
+  bump_cmake_version:
+    name: bump cmake version via pr
+    needs: publish
+    if: >-
+      !cancelled()
+      && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: post-release-cmake-version-bump
+      cancel-in-progress: false
+    # secrets.* is not allowed in step if expressions — check both App
+    # credentials through env. Minting with only the App ID set would fail
+    # on the empty required private-key before the fallback path runs.
+    env:
+      HAS_RENOVATE_APP: ${{ vars.RENOVATE_APP_ID != '' && secrets.RENOVATE_APP_PRIVATE_KEY != '' }}
+    steps:
+      # The bump only creates a PR and merges it — scope the App token to
+      # contents + pull-requests instead of inheriting the shared Renovate
+      # App's full installation (issues, statuses, workflows).
+      - name: Mint GitHub App token
+        id: app_token
+        if: env.HAS_RENOVATE_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up build
+        uses: ./.github/actions/setup-cmake
+        with:
+          cache-key: unused
+          cache-cpm: "false"
+
+      # main may have moved since validate ran (builds take ~45 min), so
+      # re-read the version from this fresh checkout: an auto-merged PR
+      # must never lower project(VERSION).
+      - name: Guard against version regression
+        id: version_guard
+        env:
+          NEXT_VERSION: ${{ inputs.next_version }}
+        run: |
+          current=$(cmake -DPROJECT_FILE=CMakeLists.txt -P cmake/scripts/get_project_version.cmake | sed -n 's/^-- //p')
+          if ! printf '%s\n%s\n' "${current}" "${NEXT_VERSION}" | sort -C -V \
+            || [[ "${current}" == "${NEXT_VERSION}" ]]; then
+            printf "::error::next_version (%s) must be greater than the version now on main (%s) — main moved during this release\n" \
+              "${NEXT_VERSION}" "${current}"
+            exit 1
+          fi
+          echo "current_version=${current}" >> "${GITHUB_OUTPUT}"
+
+      - name: Bump project version
+        env:
+          NEXT_VERSION: ${{ inputs.next_version }}
+        run: >-
+          cmake
+          -DPROJECT_FILE=CMakeLists.txt
+          -DVERSION="${NEXT_VERSION}"
+          -P cmake/scripts/set_project_version.cmake
+
+      # Getter re-read proves the rewrite; buildability of the bumped
+      # project is gated by the bump PR's own CI before auto-merge.
+      - name: Verify bumped project
+        env:
+          NEXT_VERSION: ${{ inputs.next_version }}
+        run: |
+          actual=$(cmake -DPROJECT_FILE=CMakeLists.txt -P cmake/scripts/get_project_version.cmake | sed -n 's/^-- //p')
+          test "${actual}" = "${NEXT_VERSION}" || {
+            printf "::error::expected CMake project version %s, got %s\n" "${NEXT_VERSION}" "${actual}"
+            exit 1
+          }
+          git diff --check
+          git diff --exit-code -- . ':!CMakeLists.txt'
+
+      - name: Create version bump pull request
+        id: bump_pr
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          token: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
+          add-paths: CMakeLists.txt
+          commit-message: "chore: bump CMake project version to ${{ inputs.next_version }}"
+          committer: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          author: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          branch: chore/bump-cmake-version
+          delete-branch: true
+          base: main
+          title: "chore: bump CMake project version to ${{ inputs.next_version }}"
+          body: |
+            Post-release version bump after `${{ inputs.version }}`.
+
+            - Previous project version: `${{ steps.version_guard.outputs.current_version }}`
+            - Next project version: `${{ inputs.next_version }}`
+            - Changed file: `CMakeLists.txt`
+
+            Generated and auto-merged by the release workflow.
+
+      - name: Enable auto-merge
+        if: steps.bump_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.GITHUB_TOKEN }}
+        run: >-
+          gh pr merge
+          "${{ steps.bump_pr.outputs.pull-request-number }}"
+          --repo "${{ github.repository }}"
+          --squash
+          --auto
+          --delete-branch
+          --match-head-commit "${{ steps.bump_pr.outputs.pull-request-head-sha }}"
+
+      - name: Report version bump
+        if: steps.bump_pr.outputs.pull-request-url != ''
+        run: echo "Opened and queued ${{ steps.bump_pr.outputs.pull-request-url }} for auto-merge" >> "${GITHUB_STEP_SUMMARY}"

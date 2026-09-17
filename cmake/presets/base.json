@@ -1,0 +1,55 @@
+{
+    "$schema": "https://cmake.org/cmake/help/latest/_downloads/3e2d73bff478d88a7de0de736ba5e361/schema.json",
+    "version": 11,
+    "configurePresets": [
+        {
+            "name": "base",
+            "displayName": "Base configuration",
+            "description": "Shared Ninja Multi-Config settings",
+            "hidden": true,
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_COLOR_DIAGNOSTICS": "ON",
+                "FETCHCONTENT_QUIET": "OFF"
+            }
+        },
+        {
+            "name": "release_ipo",
+            "displayName": "Release with LTO",
+            "description": "Inherit alongside a platform preset for shipping builds: link-time optimization for Release and RelWithDebInfo only. Debug never LTOs — it only slows the link and breaks hot iteration. CMake verifies compiler support at configure time (CheckIPOSupported); unsupported toolchains error early instead of shipping unoptimized binaries silently.",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE": "ON",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "build_release",
+            "hidden": true,
+            "configuration": "Release"
+        },
+        {
+            "name": "build_debug",
+            "hidden": true,
+            "configuration": "Debug"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "test_base",
+            "hidden": true,
+            "output": {
+                "outputOnFailure": true,
+                "verbosity": "default"
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            }
+        }
+    ]
+}

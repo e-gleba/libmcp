@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: workflow_lint
+
+# One lint workflow for all static checks: workflow syntax (actionlint) and
+# CMake preset syntax + schema. Previously two workflows doing one job each,
+# each paying a checkout and runner spin-up for seconds of actual work.
+on:
+  pull_request:
+    paths: &lint_paths
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - "CMakePresets.json"
+      - "cmake/presets/**"
+  push:
+    branches: [main]
+    paths: *lint_paths
+  workflow_dispatch:
+
+concurrency:
+  group: workflow_lint-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  workflow_lint:
+    name: linux_actionlint_x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Lint workflows
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo:ro" \
+            -w /repo \
+            rhysd/actionlint:1.7.12 \
+            -color
+  presets_lint:
+    name: validate_cmake_presets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up build
+        uses: ./.github/actions/setup-cmake
+        with:
+          cache-key: unused
+          cache-cpm: "false"
+      - name: Validate JSON syntax
+        run: find cmake/presets -name '*.json' -print0 | sort -z | xargs -0 -n1 jq empty && jq empty CMakePresets.json
+      - name: Validate CMake preset schema and includes
+        run: cmake --list-presets=all
