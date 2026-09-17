@@ -99,11 +99,14 @@ jobs:
           cache-key: linux_steamrt4_x86_64
           sdl3-deps: "true"
           apt-packages: git ca-certificates
+          node-version: "24"
       - name: Show runtime identity
         run: |
           cat /etc/os-release
           gcc --version | head -n 1
           ldd --version | head -n 1
+          node --version
+          npm --version
       - name: Build, test, and package inside the steamrt4 SDK
         run: cmake --workflow --preset linux_steamrt4_x86_64_release_package
       - name: ABI gate — symbol versions vs runtime libraries
@@ -207,6 +210,12 @@ jobs:
         uses: ./.github/actions/setup-cmake
         with:
           cache-key: ${{ matrix.build_dir }}
+          node-version: ${{ matrix.msvc == 'true' && '24' || '' }}
+      - name: Show node and npm versions
+        if: matrix.msvc == 'true'
+        run: |
+          node --version
+          npm --version
       - name: Cache LLVM MinGW
         if: matrix.msvc == 'false'
         uses: actions/cache@v6
