@@ -21,11 +21,20 @@ inputs:
     description: Extra apt packages, space separated (Linux only).
     required: false
     default: ""
+  node-version:
+    description: Node.js version for actions/setup-node (provides node + npm); empty skips Node setup.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
     - name: Set up CMake and Ninja
       uses: lukka/get-cmake@v4.4.2
+    - name: Set up Node.js and npm
+      if: inputs.node-version != ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
     - name: Install system dependencies
       if: runner.os == 'Linux' && (inputs.sdl3-deps == 'true' || inputs.apt-packages != '')
       shell: bash

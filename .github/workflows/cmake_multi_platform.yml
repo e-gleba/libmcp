@@ -96,6 +96,12 @@ jobs:
           cache-key: ${{ matrix.artifact_name }}
           sdl3-deps: ${{ matrix.sdl3_deps }}
           apt-packages: ${{ matrix.apt }}
+          node-version: ${{ matrix.compiler == 'msvc' && '24' || '' }}
+      - name: Show node and npm versions
+        if: matrix.compiler == 'msvc'
+        run: |
+          node --version
+          npm --version
       - name: Build and test
         run: cmake --workflow --preset ${{ matrix.preset }}
       - name: Build documentation
