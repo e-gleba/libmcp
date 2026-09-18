@@ -1,21 +1,56 @@
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+include(CheckIncludeFileCXX)
+
 set(mcp_date
     "2026-07-28"
     CACHE STRING "MCP schema version")
-set(mcp_src_dir
-    "${CMAKE_CURRENT_BINARY_DIR}/mcp"
-    CACHE PATH "Generated MCP dir")
-
-set(mcp_dir "${mcp_src_dir}/${mcp_date}")
-set(mcp_ts "${mcp_dir}/schema.ts")
-set(mcp_full "${mcp_dir}/schema.full.hpp")
-set(mcp_hpp "${mcp_dir}/schema.hpp")
+set(mcp_hpp
+    "${CMAKE_CURRENT_LIST_DIR}/${mcp_date}/schema.hpp"
+    CACHE PATH "Generated MCP header")
 set(mcp_url
     "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/${mcp_date}/schema.ts"
 )
 
+set(mcp_tmp_dir "${CMAKE_CURRENT_BINARY_DIR}/${mcp_date}")
+set(mcp_ts "${mcp_tmp_dir}/schema.ts")
+set(mcp_full "${mcp_tmp_dir}/schema.full.hpp")
+set(mcp_body_tmp "${mcp_tmp_dir}/schema.body.hpp")
+
+string(
+    REPLACE "-"
+            "_"
+            mcp_ns_suffix
+            "${mcp_date}")
+set(mcp_ns "mcp::v${mcp_ns_suffix}")
+
 find_program(npm_executable NAMES npm REQUIRED)
 
-file(MAKE_DIRECTORY "${mcp_dir}")
+foreach(
+    mcp_hdr IN
+    ITEMS cstdint
+          map
+          memory
+          string
+          variant
+          vector)
+    string(TOUPPER "${mcp_hdr}" mcp_hdr_up)
+    check_include_file_cxx("${mcp_hdr}" "MCP_HAS_${mcp_hdr_up}")
+    if(NOT MCP_HAS_${mcp_hdr_up})
+        message(FATAL_ERROR "missing <${mcp_hdr}>")
+    endif()
+endforeach()
+unset(mcp_hdr)
+unset(mcp_hdr_up)
+
+cmake_path(
+    GET
+    mcp_hpp
+    PARENT_PATH
+    mcp_out_dir)
+file(MAKE_DIRECTORY "${mcp_tmp_dir}" "${mcp_out_dir}")
+
+message(CHECK_START "fetch MCP schema ${mcp_date}")
 file(
     DOWNLOAD "${mcp_url}" "${mcp_ts}.tmp"
     TLS_VERIFY ON
@@ -37,48 +72,122 @@ file(
     "${mcp_ts}"
     ONLY_IF_DIFFERENT)
 file(REMOVE "${mcp_ts}.tmp")
+message(CHECK_PASS "done")
 
+message(CHECK_START "quicktype TS->C++ schema-only")
 execute_process(
     COMMAND
-        "${npm_executable}" exec --yes -- quicktype --src-lang typescript
-        --lang c++ --code-format with-struct --just-types --out "${mcp_full}"
-        "${mcp_ts}" COMMAND_ERROR_IS_FATAL ANY)
+        "${npm_executable}" exec --yes -- quicktype --src-lang typescript --lang
+        c++ --code-format with-struct --just-types --type-style original-case
+        --member-style original-case --enumerator-style original-case --no-boost
+        --source-style single-source --out "${mcp_full}" "${mcp_ts}"
+    WORKING_DIRECTORY
+        "${mcp_tmp_dir}"
+        COMMAND_ECHO
+        STDOUT
+        COMMAND_ERROR_IS_FATAL
+        ANY)
+message(CHECK_PASS "done")
+
+function(mcp_strip_optional line_var)
+    set(text "${${line_var}}")
+    foreach(prefix IN ITEMS "std::optional" "boost::optional")
+        string(LENGTH "${prefix}<" prefix_len)
+        while(TRUE)
+            string(FIND "${text}" "${prefix}<" pos)
+            if(pos EQUAL -1)
+                break()
+            endif()
+            string(LENGTH "${text}" text_len)
+            math(EXPR inner_start "${pos} + ${prefix_len}")
+            set(depth 1)
+            set(i ${inner_start})
+            while(i LESS text_len AND depth GREATER 0)
+                string(
+                    SUBSTRING "${text}"
+                              ${i}
+                              1
+                              ch)
+                if(ch STREQUAL "<")
+                    math(EXPR depth "${depth} + 1")
+                elseif(ch STREQUAL ">")
+                    math(EXPR depth "${depth} - 1")
+                endif()
+                math(EXPR i "${i} + 1")
+            endwhile()
+            if(depth GREATER 0)
+                break()
+            endif()
+            math(EXPR inner_len "${i} - 1 - ${inner_start}")
+            string(
+                SUBSTRING "${text}"
+                          ${inner_start}
+                          ${inner_len}
+                          inner)
+            string(
+                SUBSTRING "${text}"
+                          0
+                          ${pos}
+                          before)
+            math(EXPR after_len "${text_len} - ${i}")
+            if(after_len GREATER 0)
+                string(
+                    SUBSTRING "${text}"
+                              ${i}
+                              ${after_len}
+                              after)
+            else()
+                set(after "")
+            endif()
+            set(text "${before}${inner}${after}")
+        endwhile()
+    endforeach()
+    set(${line_var}
+        "${text}"
+        PARENT_SCOPE)
+endfunction()
 
 file(STRINGS "${mcp_full}" mcp_lines)
 set(mcp_body "")
-set(in_helper OFF)
-set(in_jsonvalue OFF)
+set(in_skip OFF)
+set(in_json_alias OFF)
+set(in_ns OFF)
 foreach(line IN LISTS mcp_lines)
-    if(line MATCHES "#ifndef NLOHMANN_UNTYPED")
-        set(in_helper ON)
+    if(line MATCHES "#ifndef NLOHMANN_")
+        set(in_skip ON)
         continue()
     endif()
-    if(in_helper)
+    if(in_skip)
         if(line MATCHES "#endif")
-            set(in_helper OFF)
+            set(in_skip OFF)
         endif()
         continue()
     endif()
-    if(line MATCHES "using JsonValue")
-        set(in_jsonvalue ON)
+    if(line MATCHES
+       "using[ \t]+(JSONValue|JSONObject|JSONArray|JsonValue)[^A-Za-z0-9_]")
+        set(in_json_alias ON)
         if(line MATCHES ";")
-            set(in_jsonvalue OFF)
+            set(in_json_alias OFF)
         endif()
         continue()
     endif()
-    if(in_jsonvalue)
+    if(in_json_alias)
         if(line MATCHES ";")
-            set(in_jsonvalue OFF)
+            set(in_json_alias OFF)
         endif()
         continue()
     endif()
-    if(line MATCHES "^#pragma once")
+    if(line MATCHES "^[ \t]*namespace[ \t]+quicktype[ \t]*[{]")
+        set(in_ns ON)
         continue()
     endif()
-    if(line MATCHES "^#include")
+    if(in_ns)
+        if(line MATCHES "^[ \t]*[}][ \t]*$")
+            set(in_ns OFF)
+        endif()
         continue()
     endif()
-    if(line MATCHES "using nlohmann::json;")
+    if(line MATCHES "^(#pragma once|#include|using nlohmann::json;)")
         continue()
     endif()
     string(
@@ -86,25 +195,77 @@ foreach(line IN LISTS mcp_lines)
                 "JsonValue"
                 line
                 "${line}")
+    string(
+        REPLACE "JSONValue"
+                "JsonValue"
+                line
+                "${line}")
+    mcp_strip_optional(line)
+    string(
+        REGEX
+        REPLACE " *= *(std::nullopt|boost::none)"
+                ""
+                line
+                "${line}")
+    if(line MATCHES
+       "^[ \t]*(struct|class)[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*[{:]"
+       AND NOT
+           line
+           MATCHES
+           "final[ \t]*[{:]")
+        string(
+            REGEX
+            REPLACE
+                "^([ \t]*(struct|class)[ \t]+[A-Za-z_][A-Za-z0-9_]*)[ \t]*([{:])"
+                "\\1 final \\3"
+                line
+                "${line}")
+    endif()
     set(mcp_body "${mcp_body}${line}\n")
 endforeach()
 
 file(
-    WRITE "${mcp_hpp}"
-    [[
-#pragma once
+    CONFIGURE
+    OUTPUT
+    "${mcp_body_tmp}"
+    CONTENT
+    [[#pragma once
+// generated from MCP schema @mcp_date@, do not edit
+// See https://modelcontextprotocol.io/docs/2026-07-28/getting-started/intro
+// See https://github.com/modelcontextprotocol/modelcontextprotocol/tree/main/schema
 #include <cstdint>
 #include <map>
-#include <memory>
-#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
-#include <any>
 
-using JsonValue = std::any;
-]])
-file(APPEND "${mcp_hpp}" "${mcp_body}")
+namespace @mcp_ns@ {
+
+struct JsonValue final {
+    using array = std::vector<JsonValue>;
+    using object = std::map<std::string, JsonValue>;
+    std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, array, object> data;
+};
+]]
+    @ONLY)
+file(APPEND "${mcp_body_tmp}" "${mcp_body}")
+file(APPEND "${mcp_body_tmp}" "} // namespace ${mcp_ns}\n")
+file(
+    COPY_FILE
+    "${mcp_body_tmp}"
+    "${mcp_hpp}"
+    ONLY_IF_DIFFERENT)
+file(
+    REMOVE
+    "${mcp_ts}"
+    "${mcp_full}"
+    "${mcp_body_tmp}")
+
+string(
+    REPLACE "-"
+            "."
+            mcp_version
+            "${mcp_date}")
 
 if(NOT TARGET mcp_schema)
     add_library(mcp_schema INTERFACE)
@@ -114,12 +275,12 @@ if(NOT TARGET mcp_schema)
         INTERFACE FILE_SET
                   HEADERS
                   BASE_DIRS
-                  "${mcp_src_dir}"
+                  "${CMAKE_CURRENT_LIST_DIR}"
                   FILES
                   "${mcp_hpp}")
     target_include_directories(
         mcp_schema SYSTEM
-        INTERFACE $<BUILD_INTERFACE:${mcp_src_dir}>
+        INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
                   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/mcp>)
     target_compile_features(mcp_schema INTERFACE cxx_std_20)
     install(
@@ -131,11 +292,13 @@ if(NOT TARGET mcp_schema)
         EXPORT mcp_targets
         NAMESPACE mcp::
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
-    file(
-        WRITE "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
-        [[
-include("${CMAKE_CURRENT_LIST_DIR}/mcp_targets.cmake")
-]])
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/mcp-config-version.cmake"
+        VERSION "${mcp_version}"
+        COMPATIBILITY ExactVersion)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
+         [[include("${CMAKE_CURRENT_LIST_DIR}/mcp_targets.cmake")]])
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
+                  "${CMAKE_CURRENT_BINARY_DIR}/mcp-config-version.cmake"
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
 endif()
