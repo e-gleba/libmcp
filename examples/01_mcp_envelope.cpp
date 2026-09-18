@@ -81,6 +81,28 @@ using namespace mcp::v2026_07_28;
              .cacheScope = cacheScope::cacheScope_public };
 }
 
+[[nodiscard]] ListResourcesResult resources(const ListResourcesRequest& lrr)
+{
+    const Resource main_rs{
+        .uri{ "file:///project/src/main.rs" },
+        .title{ "Rust Software Application Main File" },
+        .name{ "main.rs" },
+        .description{ "Primary application entry point" },
+        .mimeType{ "text/x-rust" },
+        .icons{ { .src{ "https://example.com/rust-file-icon.png" },
+                  .mimeType{ "image/png" },
+                  .sizes{ "48x48" } } }
+    };
+
+    const std::vector<Resource> resource_list{ main_rs };
+
+    return { .resultType{ "complete" },
+             .resources{ resource_list },
+             .nextCursor{ "next-page-cursor" },
+             .ttlMs      = 300000,
+             .cacheScope = cacheScope::cacheScope_public };
+}
+
 } // namespace tb
 
 int main()
