@@ -227,7 +227,9 @@ int main()
         std::mutex                write_mu{};
         std::mutex                server_mu{};
         std::atomic<bool>         io_ok{ true };
-        libmcp::server_t          server{};
+
+        libmcp::server_info_t info{};
+        libmcp::server_t      server{ info };
 
         libmcp::tool_t weather{};
         weather.name        = "get_weather";

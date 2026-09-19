@@ -20,39 +20,50 @@ namespace libmcp {
 
 struct tool_t final
 {
-    const std::string name{};
-    const std::string description{};
-    const std::string input_schema{ "{}" };
-    const std::function<std::string(std::string const& args_json)> handler{};
+    std::string name{};
+    std::string description{};
+    std::string input_schema{ "{}" };
+    std::function<std::string(std::string const& args_json)> handler{};
 };
 
 struct resource_t final
 {
-    const std::string uri{};
-    const std::string name{};
-    const std::string title{};
-    const std::string description{};
-    const std::string mime_type{ "text/plain" };
-    const std::function<std::string(std::string const& uri)> handler{};
+    std::string uri{};
+    std::string name{};
+    std::string title{};
+    std::string description{};
+    std::string mime_type{ "text/plain" };
+    std::function<std::string(std::string const& uri)> handler{};
 };
 
 struct prompt_arg_t final
 {
-    const std::string name{};
-    const std::string title{};
-    const std::string description{};
-    const bool        required{ false };
+    std::string name{};
+    std::string title{};
+    std::string description{};
+    bool        required{ false };
 };
 
 struct prompt_t final
 {
-    const std::string               name{};
-    const std::string               title{};
-    const std::string               description{};
-    const std::vector<prompt_arg_t> arguments{};
-    const std::function<std::string(
-        std::map<std::string, std::string> const& args)>
+    std::string               name{};
+    std::string               title{};
+    std::string               description{};
+    std::vector<prompt_arg_t> arguments{};
+    std::function<std::string(std::map<std::string, std::string> const& args)>
         handler{};
+};
+
+struct server_info_t final
+{
+    std::string name{ "ExampleServer" };
+    std::string version{ "1.0.0" };
+    std::string instructions{
+        "This server provides weather and resource utilities."
+    };
+    std::array<std::string, 2> protocol_version{ "2026-07-28", "2025-11-25" };
+    std::string                cache_scope{ "public" };
+    std::int64_t               ttl_ms{ 3600000 };
 };
 
 template <typename R, typename T>
@@ -63,15 +74,8 @@ concept range_of =
 class server_t final
 {
 public:
-    const std::string name{ "ExampleServer" };
-    const std::string version{ "1.0.0" };
-    const std::string instructions{
-        "This server provides weather and resource utilities."
-    };
-    const std::array<std::string, 2> protocol_version{ "2026-07-28",
-                                                       "2025-11-25" };
-    const std::string                cache_scope{ "public" };
-    const std::int64_t               ttl_ms{ 3600000 };
+    explicit server_t(server_info_t info)
+        : info_(std::move(info)) {};
 
     void add(std::convertible_to<tool_t> auto&& v)
     {
@@ -103,6 +107,8 @@ public:
     [[nodiscard]] auto get_tools() const { return tools_.get(); }
     [[nodiscard]] auto get_resources() const { return resources_.get(); }
     [[nodiscard]] auto get_prompts() const { return prompts_.get(); }
+
+    [[nodiscard]] server_info_t get_info() const { return info_; }
 
     [[nodiscard]] std::string handle_request(std::string const& raw) const;
 
@@ -158,6 +164,8 @@ private:
     tracked_t<tool_t>     tools_{};
     tracked_t<resource_t> resources_{};
     tracked_t<prompt_t>   prompts_{};
+
+    const server_info_t info_{};
 };
 
 } // namespace libmcp

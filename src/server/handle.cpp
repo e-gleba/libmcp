@@ -111,24 +111,26 @@ struct rpc_fail final
 [[nodiscard]] std::string_view negotiate_version(server_t const&  server,
                                                  std::string_view client)
 {
+    const auto protocol_version{ server.get_info().protocol_version };
     if (!client.empty()) {
-        auto it = std::ranges::find(server.protocol_version, client);
-        if (it != server.protocol_version.end())
+        auto it = std::ranges::find(protocol_version, client);
+        if (it != protocol_version.end())
             return *it;
     }
-    for (auto const& v : server.protocol_version | std::views::reverse)
-        if (!v.empty())
-            return v;
-    return k_fallback_version;
+    auto reversed = protocol_version | std::views::reverse;
+    auto it       = std::ranges::find_if(
+        reversed, std::logical_not<>{}, &std::string::empty);
+
+    return (it != reversed.end()) ? *it : k_fallback_version;
 }
 
 [[nodiscard]] json_doc versions_json(server_t const& server)
 {
     json_doc arr = json_doc::array();
-    for (auto const& v :
-         server.protocol_version | std::views::filter([](std::string const& v) {
-             return !v.empty();
-         }))
+    for (auto const& v : server.get_info().protocol_version |
+                             std::views::filter([](std::string const& v) {
+                                 return !v.empty();
+                             }))
         arr.push(json_doc::string(v));
     if (arr.size() == 0)
         arr.push(json_doc::string(k_fallback_version));
@@ -147,8 +149,8 @@ struct rpc_fail final
 [[nodiscard]] json_doc sinfo_json(server_t const& server)
 {
     json_doc out = json_doc::object();
-    out.set("name", json_doc::string(server.name));
-    out.set("version", json_doc::string(server.version));
+    out.set("name", json_doc::string(server.get_info().name));
+    out.set("version", json_doc::string(server.get_info().version));
     return out;
 }
 
@@ -186,6 +188,7 @@ struct rpc_fail final
 
 [[nodiscard]] json_doc on_disc(server_t const& server, json_doc const*)
 {
+    const server_info_t info{ server.get_info() };
     json_doc meta = json_doc::object();
     meta.set("io.modelcontextprotocol/serverInfo", sinfo_json(server));
     json_doc out = json_doc::object();
@@ -193,9 +196,9 @@ struct rpc_fail final
     out.set("supportedVersions", versions_json(server));
     out.set("capabilities", caps_json());
     out.set("_meta", std::move(meta));
-    out.set("instructions", json_doc::string(server.instructions));
-    out.set("ttlMs", json_doc::integer(server.ttl_ms));
-    out.set("cacheScope", json_doc::string(server.cache_scope));
+    out.set("instructions", json_doc::string(info.instructions));
+    out.set("ttlMs", json_doc::integer(info.ttl_ms));
+    out.set("cacheScope", json_doc::string(info.cache_scope));
     return out;
 }
 
