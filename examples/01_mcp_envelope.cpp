@@ -1,6 +1,7 @@
 #include <handle.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <charconv>
@@ -228,6 +229,19 @@ int main()
         std::atomic<bool>         io_ok{ true };
         libmcp::server_t          server{};
 
+        libmcp::tool_t weather{};
+        weather.name        = "get_weather";
+        weather.description = "Get current weather information for a location";
+        weather.input_schema =
+            R"({"type":"object","properties":{"location":{"type":"string","description":"City name or zip code"}},"required":["location"],"additionalProperties":false})";
+        weather.handler = [](std::string const& args_json) -> std::string {
+            if (app::is_blank(args_json)) {
+                return "Missing location. Pass {\"location\":\"Minsk\"}.";
+            }
+            return std::string{ "Weather stub, args=" } + args_json;
+        };
+        server.add(weather);
+
         std::size_t const n_workers{ std::ranges::max(
             { std::size_t{ 1 },
               static_cast<std::size_t>(
@@ -247,6 +261,9 @@ int main()
                         res = server.handle_request(req);
                     } catch (...) {
                         res = std::string{ app::k_handler_error };
+                    }
+                    if (res.empty()) {
+                        continue;
                     }
                     std::lock_guard<std::mutex> wlock{ write_mu };
                     std::cout << res << std::endl;

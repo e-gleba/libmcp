@@ -1,13 +1,20 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <concepts>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <ranges>
 #include <shared_mutex>
 #include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace libmcp {
 
@@ -49,7 +56,8 @@ struct prompt_t final
 
 template <typename R, typename T>
 concept range_of =
-    std::ranges::range<R> && std::same_as<std::ranges::range_value_t<R>, T>;
+    std::ranges::input_range<R> &&
+    std::convertible_to<std::ranges::range_reference_t<R>, T const&>;
 
 class server_t final
 {
@@ -59,43 +67,92 @@ public:
     const std::string instructions{
         "This server provides weather and resource utilities."
     };
-    const std::string  protocol_version{ "2026-07-28" };
-    const std::string  cache_scope{ "public" };
-    const std::int64_t ttl_ms{ 3600000 };
+    const std::array<std::string, 2> protocol_version{ "2026-07-28",
+                                                       "2025-11-25" };
+    const std::string                cache_scope{ "public" };
+    const std::int64_t               ttl_ms{ 3600000 };
 
-    void add(range_of<tool_t> auto& tools) { tools_.add(tools); }
-    void add(range_of<resource_t> auto& resources)
+    server_t()                           = default;
+    server_t(server_t const&)            = delete;
+    server_t& operator=(server_t const&) = delete;
+
+    void add(std::convertible_to<tool_t> auto&& v)
     {
-        resources_.add(resources);
+        tools_.add(std::forward<decltype(v)>(v));
     }
-    void add(range_of<prompt_t> auto& prompts) { prompts_.add(prompts); }
+    void add(range_of<tool_t> auto&& r)
+    {
+        tools_.add(std::forward<decltype(r)>(r));
+    }
+
+    void add(std::convertible_to<resource_t> auto&& v)
+    {
+        resources_.add(std::forward<decltype(v)>(v));
+    }
+    void add(range_of<resource_t> auto&& r)
+    {
+        resources_.add(std::forward<decltype(r)>(r));
+    }
+
+    void add(std::convertible_to<prompt_t> auto&& v)
+    {
+        prompts_.add(std::forward<decltype(v)>(v));
+    }
+    void add(range_of<prompt_t> auto&& r)
+    {
+        prompts_.add(std::forward<decltype(r)>(r));
+    }
+
+    [[nodiscard]] auto get_tools() const { return tools_.get(); }
+    [[nodiscard]] auto get_resources() const { return resources_.get(); }
+    [[nodiscard]] auto get_prompts() const { return prompts_.get(); }
 
     [[nodiscard]] std::string handle_request(std::string const& raw) const;
 
 private:
     template <typename T> class tracked_t final
     {
-    private:
-        std::vector<T>    self_{};
-        std::shared_mutex mutex_;
-        std::atomic<bool> seen_;
-
     public:
-        void add(range_of<T> auto& args)
+        void add(std::convertible_to<T> auto&& v)
         {
             std::unique_lock lock(mutex_);
-            self_.push_back(args);
-            seen_ = false;
+            self_.emplace_back(std::forward<decltype(v)>(v));
+            seen_.store(false, std::memory_order::release);
         }
 
-        [[nodiscard]] auto get()
+        void add(range_of<T> auto&& r)
         {
-            seen_ = true;
-            std::shared_lock lock(mutex_);
-            return std::to_array({ self_ });
+            std::unique_lock lock(mutex_);
+            if constexpr (std::ranges::sized_range<
+                              std::remove_cvref_t<decltype(r)>>)
+                self_.reserve(self_.size() + std::ranges::size(r));
+            if constexpr (std::is_lvalue_reference_v<decltype(r)> ||
+                          std::is_const_v<std::remove_reference_t<decltype(r)>>)
+                std::ranges::copy(std::forward<decltype(r)>(r),
+                                  std::back_inserter(self_));
+            else
+                std::ranges::move(std::forward<decltype(r)>(r),
+                                  std::back_inserter(self_));
+            seen_.store(false, std::memory_order::release);
         }
 
-        [[nodiscard]] bool have_changed() noexcept { return seen_; }
+        [[nodiscard]] std::vector<T> get() const
+        {
+            std::shared_lock lock(mutex_);
+            std::vector<T>   out{ self_ };
+            seen_.store(true, std::memory_order::release);
+            return out;
+        }
+
+        [[nodiscard]] bool have_changed() const noexcept
+        {
+            return !seen_.load(std::memory_order::acquire);
+        }
+
+    private:
+        std::vector<T>            self_{};
+        mutable std::shared_mutex mutex_{};
+        mutable std::atomic<bool> seen_{ true };
     };
 
     tracked_t<tool_t>     tools_{};
