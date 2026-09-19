@@ -24,7 +24,8 @@ function(mcp_example name src)
         "example_${name}" PROPERTIES CXX_EXTENSIONS OFF OUTPUT_NAME
                                                         "example_${name}")
 
-    target_link_libraries("example_${name}" PRIVATE mcp::schema warnings)
+    target_link_libraries("example_${name}" PRIVATE warnings
+                                                    mcp_handler::mcp_handler)
     if(arg_LINK)
         target_link_libraries("example_${name}" PRIVATE ${arg_LINK})
     endif()
