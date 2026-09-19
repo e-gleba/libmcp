@@ -56,28 +56,25 @@ target_include_directories(
     mcp_handler PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
                        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-target_link_libraries(mcp_handler PRIVATE $<BUILD_INTERFACE:mcp::schema>
-                                          $<BUILD_INTERFACE:warnings>)
-
 option(MCP_HANDLER_USE_JSONCPP "Use jsoncpp backend instead of nlohmann_json"
        ON)
 
+target_link_libraries(
+    mcp_handler
+    PRIVATE
+        $<BUILD_INTERFACE:mcp::schema>
+        $<BUILD_INTERFACE:warnings>
+        $<$<BOOL:${MCP_HANDLER_USE_JSONCPP}>:$<BUILD_INTERFACE:jsoncpp_static>>
+        $<$<NOT:$<BOOL:${MCP_HANDLER_USE_JSONCPP}>>:$<BUILD_INTERFACE:nlohmann_json::nlohmann_json>>
+)
+
 if(MCP_HANDLER_USE_JSONCPP)
-    if(TARGET jsoncpp_static)
-        target_link_libraries(mcp_handler
-                              PRIVATE $<BUILD_INTERFACE:jsoncpp_static>)
-    else()
-        target_link_libraries(mcp_handler
-                              PRIVATE $<BUILD_INTERFACE:jsoncpp_lib>)
-    endif()
     set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/detail/jsoncpp.cpp
                                 PROPERTIES HEADER_FILE_ONLY FALSE)
     set_source_files_properties(
         ${CMAKE_CURRENT_LIST_DIR}/detail/nlohmann_json.cpp
         PROPERTIES HEADER_FILE_ONLY TRUE)
 else()
-    target_link_libraries(
-        mcp_handler PRIVATE $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>)
     set_source_files_properties(
         ${CMAKE_CURRENT_LIST_DIR}/detail/nlohmann_json.cpp
         PROPERTIES HEADER_FILE_ONLY FALSE)

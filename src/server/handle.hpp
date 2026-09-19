@@ -36,20 +36,20 @@ struct resource_t final
     std::function<std::string(std::string const& uri)> handler{};
 };
 
-struct prompt_arg_t final
-{
-    std::string name{};
-    std::string title{};
-    std::string description{};
-    bool        required{ false };
-};
-
 struct prompt_t final
 {
+    struct arg_t final
+    {
+        std::string name{};
+        std::string title{};
+        std::string description{};
+        bool        required{ false };
+    };
+
     std::string               name{};
     std::string               title{};
     std::string               description{};
-    std::vector<prompt_arg_t> arguments{};
+    std::vector<arg_t>        arguments{};
     std::function<std::string(std::map<std::string, std::string> const& args)>
         handler{};
 };
