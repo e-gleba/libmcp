@@ -1,5 +1,5 @@
 #include "handle.hpp"
-#include "json.hpp"
+#include "detail/json.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -8,8 +8,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-
-#include <2026-07-28/schema.hpp>
 
 namespace libmcp {
 
@@ -98,7 +96,7 @@ namespace {
     return pack_msg(std::move(id), "result", std::move(payload));
 }
 
-struct rpc_fail
+struct rpc_fail final
 {
     rpc_error_code code;
     std::string    message;

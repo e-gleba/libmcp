@@ -20,37 +20,38 @@ namespace libmcp {
 
 struct tool_t final
 {
-    std::string name{};
-    std::string description{};
-    std::string input_schema{ "{}" };
-    std::function<std::string(std::string const& args_json)> handler{};
+    const std::string name{};
+    const std::string description{};
+    const std::string input_schema{ "{}" };
+    const std::function<std::string(std::string const& args_json)> handler{};
 };
 
 struct resource_t final
 {
-    std::string uri{};
-    std::string name{};
-    std::string title{};
-    std::string description{};
-    std::string mime_type{ "text/plain" };
-    std::function<std::string(std::string const& uri)> handler{};
+    const std::string uri{};
+    const std::string name{};
+    const std::string title{};
+    const std::string description{};
+    const std::string mime_type{ "text/plain" };
+    const std::function<std::string(std::string const& uri)> handler{};
 };
 
 struct prompt_arg_t final
 {
-    std::string name{};
-    std::string title{};
-    std::string description{};
-    bool        required{ false };
+    const std::string name{};
+    const std::string title{};
+    const std::string description{};
+    const bool        required{ false };
 };
 
 struct prompt_t final
 {
-    std::string               name{};
-    std::string               title{};
-    std::string               description{};
-    std::vector<prompt_arg_t> arguments{};
-    std::function<std::string(std::map<std::string, std::string> const& args)>
+    const std::string               name{};
+    const std::string               title{};
+    const std::string               description{};
+    const std::vector<prompt_arg_t> arguments{};
+    const std::function<std::string(
+        std::map<std::string, std::string> const& args)>
         handler{};
 };
 
@@ -71,10 +72,6 @@ public:
                                                        "2025-11-25" };
     const std::string                cache_scope{ "public" };
     const std::int64_t               ttl_ms{ 3600000 };
-
-    server_t()                           = default;
-    server_t(server_t const&)            = delete;
-    server_t& operator=(server_t const&) = delete;
 
     void add(std::convertible_to<tool_t> auto&& v)
     {
@@ -124,15 +121,18 @@ private:
         {
             std::unique_lock lock(mutex_);
             if constexpr (std::ranges::sized_range<
-                              std::remove_cvref_t<decltype(r)>>)
+                              std::remove_cvref_t<decltype(r)>>) {
                 self_.reserve(self_.size() + std::ranges::size(r));
+            }
             if constexpr (std::is_lvalue_reference_v<decltype(r)> ||
-                          std::is_const_v<std::remove_reference_t<decltype(r)>>)
+                          std::is_const_v<
+                              std::remove_reference_t<decltype(r)>>) {
                 std::ranges::copy(std::forward<decltype(r)>(r),
                                   std::back_inserter(self_));
-            else
+            } else {
                 std::ranges::move(std::forward<decltype(r)>(r),
                                   std::back_inserter(self_));
+            }
             seen_.store(false, std::memory_order::release);
         }
 
