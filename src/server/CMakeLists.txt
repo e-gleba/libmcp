@@ -29,7 +29,7 @@ file(
     "${CMAKE_CURRENT_LIST_DIR}/detail/*.hpp"
     "${CMAKE_CURRENT_LIST_DIR}/detail/*.hxx")
 
-add_library(mcp_handler STATIC)
+add_library(mcp_handler STATIC json.cpp json.hpp)
 add_library(mcp_handler::mcp_handler ALIAS mcp_handler)
 
 target_sources(
@@ -49,7 +49,8 @@ set_target_properties(
     PROPERTIES CXX_EXTENSIONS OFF
                CXX_STANDARD_REQUIRED ON
                POSITION_INDEPENDENT_CODE ON
-               OUTPUT_NAME mcp_handler)
+               OUTPUT_NAME mcp_handler
+               MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 target_include_directories(
     mcp_handler PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
@@ -59,6 +60,12 @@ target_link_libraries(
     mcp_handler
     PRIVATE $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
             $<BUILD_INTERFACE:mcp::schema> $<BUILD_INTERFACE:warnings>)
+
+target_link_options(
+    mcp_handler
+    PUBLIC
+    "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<CXX_COMPILER_ID:AppleClang>>>:-static-libgcc;-static-libstdc++>"
+)
 
 install(
     TARGETS mcp_handler

@@ -1,6 +1,5 @@
 #include "handle.hpp"
-
-#include <nlohmann/json.hpp>
+#include "json.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -15,7 +14,6 @@
 namespace libmcp {
 
 using mcp_map_t = std::map<std::string, std::string>;
-using json      = nlohmann::json;
 
 enum class rpc_error_code : std::int32_t
 {
@@ -33,85 +31,80 @@ constexpr const char* internal_fallback() noexcept
     return R"({"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}})";
 }
 
-[[nodiscard]] inline mcp_map_t map_from_json(json const& j)
-{
-    mcp_map_t out{};
-    for (auto const& [k, v] : j.items())
-        out.emplace(k,
-                    v.is_string() ? v.get<std::string>()
-                    : v.is_null() ? std::string{}
-                                  : v.dump());
-    return out;
-}
-
-[[nodiscard]] inline mcp_map_t parse_to_map(std::string_view text)
+[[nodiscard]] mcp_map_t map_from_json(json_doc const& doc)
 {
     try {
-        json const j = json::parse(text);
-        if (!j.is_object())
+        return doc.flat_map();
+    } catch (...) {
+        return mcp_map_t{};
+    }
+}
+
+[[nodiscard]] mcp_map_t parse_to_map(std::string_view text)
+{
+    try {
+        json_doc doc = json_doc::parse(text);
+        if (!doc.is_object())
             return mcp_map_t{ { "error", "not_object" } };
-        return map_from_json(j);
+        return doc.flat_map();
     } catch (...) {
         return mcp_map_t{ { "error", "parse_failed" },
                           { "raw", std::string{ text } } };
     }
 }
 
-[[nodiscard]] inline std::string convert_to_string(mcp_map_t const& m)
+[[nodiscard]] std::string convert_to_string(mcp_map_t const& m)
 {
-    json const j = m;
-    return j.dump();
+    json_doc out = json_doc::object();
+    for (auto const& [k, v] : m)
+        out.set(k, json_doc::string(v));
+    return out.dump();
 }
 
 namespace {
 
-// Single envelope builder.
-[[nodiscard]] std::string create_jrpc_message(json             id,
-                                              std::string_view key,
-                                              json             payload)
+[[nodiscard]] std::string pack_msg(json_doc         id,
+                                   std::string_view key,
+                                   json_doc         payload)
 {
     try {
-        json out                = json::object();
-        out["jsonrpc"]          = "2.0";
-        out["id"]               = std::move(id);
-        out[std::string{ key }] = std::move(payload);
+        json_doc out = json_doc::object();
+        out.set("jsonrpc", json_doc::string("2.0"));
+        out.set("id", std::move(id));
+        out.set(key, std::move(payload));
         return out.dump();
     } catch (...) {
         return internal_fallback();
     }
 }
 
-[[nodiscard]] json make_error_payload(rpc_error_code   code,
-                                      std::string_view message)
+[[nodiscard]] json_doc err_pay(rpc_error_code code, std::string_view message)
 {
-    json out       = json::object();
-    out["code"]    = static_cast<std::int32_t>(code);
-    out["message"] = std::string{ message };
+    json_doc out = json_doc::object();
+    out.set("code", json_doc::integer(static_cast<std::int64_t>(code)));
+    out.set("message", json_doc::string(message));
     return out;
 }
 
-[[nodiscard]] std::string rpc_error(json             id,
+[[nodiscard]] std::string rpc_error(json_doc         id,
                                     rpc_error_code   code,
                                     std::string_view message)
 {
-    return create_jrpc_message(
-        std::move(id), "error", make_error_payload(code, message));
+    return pack_msg(std::move(id), "error", err_pay(code, message));
 }
 
-[[nodiscard]] std::string rpc_result(json id, json payload)
+[[nodiscard]] std::string rpc_result(json_doc id, json_doc payload)
 {
-    return create_jrpc_message(std::move(id), "result", std::move(payload));
+    return pack_msg(std::move(id), "result", std::move(payload));
 }
 
-// Handlers stay pure: return payload. Errors throw, dispatcher maps to RPC.
 struct rpc_fail
 {
     rpc_error_code code;
     std::string    message;
 };
 
-// Stepanov: one predicate, two projections via views::filter.
-[[nodiscard]] constexpr bool is_uri_template(std::string_view uri) noexcept
+[[nodiscard]] constexpr bool is_tpl(std::string_view uri) noexcept
 {
     return uri.find('{') != std::string_view::npos &&
            uri.find('}') != std::string_view::npos;
@@ -131,218 +124,183 @@ struct rpc_fail
     return k_fallback_version;
 }
 
-[[nodiscard]] json supported_versions_json(server_t const& server)
+[[nodiscard]] json_doc versions_json(server_t const& server)
 {
-    json arr = json::array();
+    json_doc arr = json_doc::array();
     for (auto const& v :
          server.protocol_version | std::views::filter([](std::string const& v) {
              return !v.empty();
          }))
-        arr.push_back(v);
-    if (arr.empty())
-        arr.push_back(std::string{ k_fallback_version });
+        arr.push(json_doc::string(v));
+    if (arr.size() == 0)
+        arr.push(json_doc::string(k_fallback_version));
     return arr;
 }
 
-[[nodiscard]] json capabilities_json()
+[[nodiscard]] json_doc caps_json()
 {
-    json out         = json::object();
-    out["tools"]     = json::object();
-    out["resources"] = json::object();
-    out["prompts"]   = json::object();
+    json_doc out = json_doc::object();
+    out.set("tools", json_doc::object());
+    out.set("resources", json_doc::object());
+    out.set("prompts", json_doc::object());
     return out;
 }
 
-[[nodiscard]] json server_info_json(server_t const& server)
+[[nodiscard]] json_doc sinfo_json(server_t const& server)
 {
-    json out       = json::object();
-    out["name"]    = server.name;
-    out["version"] = server.version;
+    json_doc out = json_doc::object();
+    out.set("name", json_doc::string(server.name));
+    out.set("version", json_doc::string(server.version));
     return out;
 }
 
-[[nodiscard]] json parse_schema(std::string const& s)
+[[nodiscard]] json_doc parse_schema(std::string const& s)
 {
     try {
-        json parsed = json::parse(s);
-        if (parsed.is_object())
-            return parsed;
+        json_doc p = json_doc::parse(s);
+        if (p.is_object())
+            return p;
     } catch (...) {
     }
-    return json{ { "type", "object" } };
-}
-
-[[nodiscard]] json initialize_payload(server_t const&  server,
-                                      std::string_view client_version)
-{
-    json out               = json::object();
-    out["protocolVersion"] = negotiate_version(server, client_version);
-    out["capabilities"]    = capabilities_json();
-    out["serverInfo"]      = server_info_json(server);
+    json_doc out = json_doc::object();
+    out.set("type", json_doc::string("object"));
     return out;
 }
 
-[[nodiscard]] json discover_payload(server_t const& server)
-{
-    json meta                                  = json::object();
-    meta["io.modelcontextprotocol/serverInfo"] = server_info_json(server);
-    json out                                   = json::object();
-    out["resultType"]                          = "complete";
-    out["supportedVersions"] = supported_versions_json(server);
-    out["capabilities"]      = capabilities_json();
-    out["_meta"]             = std::move(meta);
-    out["instructions"]      = server.instructions;
-    out["ttlMs"]             = server.ttl_ms;
-    out["cacheScope"]        = server.cache_scope;
-    return out;
-}
-
-[[nodiscard]] json tools_list_payload(server_t const& server)
-{
-    auto tools{ server.get_tools() };
-    json arr = json::array();
-    for (auto const& t : tools) {
-        json item           = json::object();
-        item["name"]        = t.name;
-        item["description"] = t.description;
-        item["inputSchema"] = parse_schema(t.input_schema);
-        arr.push_back(std::move(item));
-    }
-    json out     = json::object();
-    out["tools"] = std::move(arr);
-    return out;
-}
-
-[[nodiscard]] json resources_list_payload(server_t const& server)
-{
-    auto resources{ server.get_resources() };
-    json arr = json::array();
-    for (auto const& r :
-         resources | std::views::filter([](resource_t const& r) {
-             return !is_uri_template(r.uri);
-         })) {
-        json item           = json::object();
-        item["uri"]         = r.uri;
-        item["name"]        = r.name;
-        item["title"]       = r.title;
-        item["description"] = r.description;
-        item["mimeType"]    = r.mime_type;
-        arr.push_back(std::move(item));
-    }
-    json out         = json::object();
-    out["resources"] = std::move(arr);
-    return out;
-}
-
-[[nodiscard]] json resource_templates_list_payload(server_t const& server)
-{
-    auto resources{ server.get_resources() };
-    json arr = json::array();
-    for (auto const& r :
-         resources | std::views::filter([](resource_t const& r) {
-             return is_uri_template(r.uri);
-         })) {
-        json item           = json::object();
-        item["uriTemplate"] = r.uri;
-        item["name"]        = r.name;
-        item["title"]       = r.title;
-        item["description"] = r.description;
-        item["mimeType"]    = r.mime_type;
-        arr.push_back(std::move(item));
-    }
-    json out                 = json::object();
-    out["resourceTemplates"] = std::move(arr);
-    return out;
-}
-
-[[nodiscard]] json prompts_list_payload(server_t const& server)
-{
-    auto prompts{ server.get_prompts() };
-    json arr = json::array();
-    for (auto const& p : prompts) {
-        json args = json::array();
-        for (auto const& a : p.arguments) {
-            json item           = json::object();
-            item["name"]        = a.name;
-            item["title"]       = a.title;
-            item["description"] = a.description;
-            item["required"]    = a.required;
-            args.push_back(std::move(item));
-        }
-        json item           = json::object();
-        item["name"]        = p.name;
-        item["title"]       = p.title;
-        item["description"] = p.description;
-        item["arguments"]   = std::move(args);
-        arr.push_back(std::move(item));
-    }
-    json out       = json::object();
-    out["prompts"] = std::move(arr);
-    return out;
-}
-
-[[nodiscard]] json ping_payload(server_t const&, json const*)
-{
-    return json::object();
-}
-
-[[nodiscard]] json on_initialize(server_t const& server, json const* params)
+[[nodiscard]] json_doc on_init(server_t const& server, json_doc const* params)
 {
     std::string      buf{};
     std::string_view client{};
     if (params != nullptr && params->is_object()) {
-        if (auto it = params->find("protocolVersion");
-            it != params->end() && it->is_string()) {
-            buf    = it->get<std::string>();
+        json_doc v = params->find("protocolVersion");
+        if (v.valid() && v.is_string()) {
+            buf    = v.as_string();
             client = buf;
         }
     }
-    return initialize_payload(server, client);
+    json_doc out = json_doc::object();
+    out.set("protocolVersion",
+            json_doc::string(negotiate_version(server, client)));
+    out.set("capabilities", caps_json());
+    out.set("serverInfo", sinfo_json(server));
+    return out;
 }
 
-[[nodiscard]] json on_discover(server_t const& server, json const*)
+[[nodiscard]] json_doc on_disc(server_t const& server, json_doc const*)
 {
-    return discover_payload(server);
+    json_doc meta = json_doc::object();
+    meta.set("io.modelcontextprotocol/serverInfo", sinfo_json(server));
+    json_doc out = json_doc::object();
+    out.set("resultType", json_doc::string("complete"));
+    out.set("supportedVersions", versions_json(server));
+    out.set("capabilities", caps_json());
+    out.set("_meta", std::move(meta));
+    out.set("instructions", json_doc::string(server.instructions));
+    out.set("ttlMs", json_doc::integer(server.ttl_ms));
+    out.set("cacheScope", json_doc::string(server.cache_scope));
+    return out;
 }
 
-[[nodiscard]] json on_tools_list(server_t const& server, json const*)
+[[nodiscard]] json_doc on_tools(server_t const& server, json_doc const*)
 {
-    return tools_list_payload(server);
+    auto     tools{ server.get_tools() };
+    json_doc arr = json_doc::array();
+    for (auto const& t : tools) {
+        json_doc item = json_doc::object();
+        item.set("name", json_doc::string(t.name));
+        item.set("description", json_doc::string(t.description));
+        item.set("inputSchema", parse_schema(t.input_schema));
+        arr.push(std::move(item));
+    }
+    json_doc out = json_doc::object();
+    out.set("tools", std::move(arr));
+    return out;
 }
 
-[[nodiscard]] json on_resources_list(server_t const& server, json const*)
+[[nodiscard]] json_doc on_res(server_t const& server, json_doc const*)
 {
-    return resources_list_payload(server);
+    auto     resources{ server.get_resources() };
+    json_doc arr = json_doc::array();
+    for (auto const& r :
+         resources | std::views::filter(
+                         [](resource_t const& r) { return !is_tpl(r.uri); })) {
+        json_doc item = json_doc::object();
+        item.set("uri", json_doc::string(r.uri));
+        item.set("name", json_doc::string(r.name));
+        item.set("title", json_doc::string(r.title));
+        item.set("description", json_doc::string(r.description));
+        item.set("mimeType", json_doc::string(r.mime_type));
+        arr.push(std::move(item));
+    }
+    json_doc out = json_doc::object();
+    out.set("resources", std::move(arr));
+    return out;
 }
 
-[[nodiscard]] json on_resource_templates_list(server_t const& server,
-                                              json const*)
+[[nodiscard]] json_doc on_tpl(server_t const& server, json_doc const*)
 {
-    return resource_templates_list_payload(server);
+    auto     resources{ server.get_resources() };
+    json_doc arr = json_doc::array();
+    for (auto const& r :
+         resources | std::views::filter(
+                         [](resource_t const& r) { return is_tpl(r.uri); })) {
+        json_doc item = json_doc::object();
+        item.set("uriTemplate", json_doc::string(r.uri));
+        item.set("name", json_doc::string(r.name));
+        item.set("title", json_doc::string(r.title));
+        item.set("description", json_doc::string(r.description));
+        item.set("mimeType", json_doc::string(r.mime_type));
+        arr.push(std::move(item));
+    }
+    json_doc out = json_doc::object();
+    out.set("resourceTemplates", std::move(arr));
+    return out;
 }
 
-[[nodiscard]] json on_prompts_list(server_t const& server, json const*)
+[[nodiscard]] json_doc on_prompts(server_t const& server, json_doc const*)
 {
-    return prompts_list_payload(server);
+    auto     prompts{ server.get_prompts() };
+    json_doc arr = json_doc::array();
+    for (auto const& p : prompts) {
+        json_doc args = json_doc::array();
+        for (auto const& a : p.arguments) {
+            json_doc item = json_doc::object();
+            item.set("name", json_doc::string(a.name));
+            item.set("title", json_doc::string(a.title));
+            item.set("description", json_doc::string(a.description));
+            item.set("required", json_doc::boolean(a.required));
+            args.push(std::move(item));
+        }
+        json_doc item = json_doc::object();
+        item.set("name", json_doc::string(p.name));
+        item.set("title", json_doc::string(p.title));
+        item.set("description", json_doc::string(p.description));
+        item.set("arguments", std::move(args));
+        arr.push(std::move(item));
+    }
+    json_doc out = json_doc::object();
+    out.set("prompts", std::move(arr));
+    return out;
 }
 
-[[nodiscard]] json on_ping(server_t const& server, json const* params)
+[[nodiscard]] json_doc on_ping(server_t const&, json_doc const*)
 {
-    return ping_payload(server, params);
+    return json_doc::object();
 }
 
-[[nodiscard]] json on_tool_call(server_t const& server, json const* params)
+[[nodiscard]] json_doc on_call(server_t const& server, json_doc const* params)
 {
     if (params == nullptr || !params->is_object())
         throw rpc_fail{ rpc_error_code::invalid_params, "Invalid params" };
-    auto it_name = params->find("name");
-    if (it_name == params->end() || !it_name->is_string())
+    json_doc name_doc = params->find("name");
+    if (!name_doc.valid() || !name_doc.is_string())
         throw rpc_fail{ rpc_error_code::invalid_params, "Missing tool name" };
-    std::string const& name = it_name->get_ref<json::string_t const&>();
+    std::string name = name_doc.as_string();
 
     std::string args_json{ "{}" };
-    if (auto it = params->find("arguments"); it != params->end())
-        args_json = it->dump();
+    json_doc    args_doc = params->find("arguments");
+    if (args_doc.valid())
+        args_json = args_doc.dump();
 
     auto tools{ server.get_tools() };
     auto it = std::ranges::find(tools, name, &tool_t::name);
@@ -351,37 +309,37 @@ struct rpc_fail
                         "Unknown tool: " + name };
     try {
         std::string text = it->handler ? it->handler(args_json) : std::string{};
-        json        content = json::array();
-        json        entry   = json::object();
-        entry["type"]       = "text";
-        entry["text"]       = std::move(text);
-        content.push_back(std::move(entry));
-        json out       = json::object();
-        out["content"] = std::move(content);
-        out["isError"] = false;
+        json_doc    content = json_doc::array();
+        json_doc    entry   = json_doc::object();
+        entry.set("type", json_doc::string("text"));
+        entry.set("text", json_doc::string(text));
+        content.push(std::move(entry));
+        json_doc out = json_doc::object();
+        out.set("content", std::move(content));
+        out.set("isError", json_doc::boolean(false));
         return out;
     } catch (std::exception const& e) {
-        json content  = json::array();
-        json entry    = json::object();
-        entry["type"] = "text";
-        entry["text"] = e.what();
-        content.push_back(std::move(entry));
-        json out       = json::object();
-        out["content"] = std::move(content);
-        out["isError"] = true;
+        json_doc content = json_doc::array();
+        json_doc entry   = json_doc::object();
+        entry.set("type", json_doc::string("text"));
+        entry.set("text", json_doc::string(e.what()));
+        content.push(std::move(entry));
+        json_doc out = json_doc::object();
+        out.set("content", std::move(content));
+        out.set("isError", json_doc::boolean(true));
         return out;
     }
 }
 
-[[nodiscard]] json on_resource_read(server_t const& server, json const* params)
+[[nodiscard]] json_doc on_read(server_t const& server, json_doc const* params)
 {
     if (params == nullptr || !params->is_object())
         throw rpc_fail{ rpc_error_code::invalid_params, "Invalid params" };
-    auto it_uri = params->find("uri");
-    if (it_uri == params->end() || !it_uri->is_string())
+    json_doc uri_doc = params->find("uri");
+    if (!uri_doc.valid() || !uri_doc.is_string())
         throw rpc_fail{ rpc_error_code::invalid_params,
                         "Missing resource uri" };
-    std::string const& uri = it_uri->get_ref<json::string_t const&>();
+    std::string uri = uri_doc.as_string();
 
     auto resources{ server.get_resources() };
     auto it = std::ranges::find(resources, uri, &resource_t::uri);
@@ -389,25 +347,25 @@ struct rpc_fail
         throw rpc_fail{ rpc_error_code::invalid_params,
                         "Unknown resource: " + uri };
     std::string text  = it->handler ? it->handler(uri) : std::string{};
-    json        entry = json::object();
-    entry["uri"]      = it->uri;
-    entry["mimeType"] = it->mime_type;
-    entry["text"]     = std::move(text);
-    json contents     = json::array();
-    contents.push_back(std::move(entry));
-    json out        = json::object();
-    out["contents"] = std::move(contents);
+    json_doc    entry = json_doc::object();
+    entry.set("uri", json_doc::string(it->uri));
+    entry.set("mimeType", json_doc::string(it->mime_type));
+    entry.set("text", json_doc::string(text));
+    json_doc contents = json_doc::array();
+    contents.push(std::move(entry));
+    json_doc out = json_doc::object();
+    out.set("contents", std::move(contents));
     return out;
 }
 
-[[nodiscard]] json on_prompt_get(server_t const& server, json const* params)
+[[nodiscard]] json_doc on_get(server_t const& server, json_doc const* params)
 {
     if (params == nullptr || !params->is_object())
         throw rpc_fail{ rpc_error_code::invalid_params, "Invalid params" };
-    auto it_name = params->find("name");
-    if (it_name == params->end() || !it_name->is_string())
+    json_doc name_doc = params->find("name");
+    if (!name_doc.valid() || !name_doc.is_string())
         throw rpc_fail{ rpc_error_code::invalid_params, "Missing prompt name" };
-    std::string const& name = it_name->get_ref<json::string_t const&>();
+    std::string name = name_doc.as_string();
 
     auto prompts{ server.get_prompts() };
     auto it = std::ranges::find(prompts, name, &prompt_t::name);
@@ -415,64 +373,61 @@ struct rpc_fail
         throw rpc_fail{ rpc_error_code::invalid_params,
                         "Unknown prompt: " + name };
     mcp_map_t args{};
-    if (auto it_args = params->find("arguments");
-        it_args != params->end() && it_args->is_object())
-        args = map_from_json(*it_args);
+    json_doc  args_doc = params->find("arguments");
+    if (args_doc.valid() && args_doc.is_object())
+        args = args_doc.flat_map();
 
     std::string text    = it->handler ? it->handler(args) : std::string{};
-    json        content = json::object();
-    content["type"]     = "text";
-    content["text"]     = std::move(text);
-    json message        = json::object();
-    message["role"]     = "user";
-    message["content"]  = std::move(content);
-    json messages       = json::array();
-    messages.push_back(std::move(message));
-    json out           = json::object();
-    out["description"] = it->description;
-    out["messages"]    = std::move(messages);
+    json_doc    content = json_doc::object();
+    content.set("type", json_doc::string("text"));
+    content.set("text", json_doc::string(text));
+    json_doc message = json_doc::object();
+    message.set("role", json_doc::string("user"));
+    message.set("content", std::move(content));
+    json_doc arr = json_doc::array();
+    arr.push(std::move(message));
+    json_doc out = json_doc::object();
+    out.set("description", json_doc::string(it->description));
+    out.set("messages", std::move(arr));
     return out;
 }
 
 struct route_t
 {
     std::string_view method;
-    json (*fn)(server_t const&, json const*);
+    json_doc (*fn)(server_t const&, json_doc const*);
 };
 
-const route_t k_routes[] = {
-    { "initialize", &on_initialize },
-    { "server/discover", &on_discover },
-    { "tools/list", &on_tools_list },
-    { "tools/call", &on_tool_call },
-    { "resources/list", &on_resources_list },
-    { "resources/templates/list", &on_resource_templates_list },
-    { "resources/read", &on_resource_read },
-    { "prompts/list", &on_prompts_list },
-    { "prompts/get", &on_prompt_get },
-    { "ping", &on_ping },
+route_t const k_routes[] = {
+    { "initialize", &on_init },     { "server/discover", &on_disc },
+    { "tools/list", &on_tools },    { "tools/call", &on_call },
+    { "resources/list", &on_res },  { "resources/templates/list", &on_tpl },
+    { "resources/read", &on_read }, { "prompts/list", &on_prompts },
+    { "prompts/get", &on_get },     { "ping", &on_ping },
 };
 
 } // namespace
 
 std::string server_t::handle_request(std::string const& raw) const
 {
-    json doc = json(nullptr);
+    json_doc doc{};
     try {
-        doc = json::parse(raw);
+        doc = json_doc::parse(raw);
     } catch (...) {
-        return rpc_error(json(nullptr), rpc_error_code::parse, "Parse error");
+        return rpc_error(
+            json_doc::null(), rpc_error_code::parse, "Parse error");
     }
-    auto current_id = [&]() -> json {
+    auto current_id = [&]() -> json_doc {
         if (doc.is_object()) {
-            if (auto it = doc.find("id"); it != doc.end() && !it->is_null()) {
+            json_doc id = doc.find("id");
+            if (id.valid() && !id.is_null()) {
                 try {
-                    return *it;
+                    return id;
                 } catch (...) {
                 }
             }
         }
-        return json(nullptr);
+        return json_doc::null();
     };
     try {
         if (!doc.is_object())
@@ -480,24 +435,27 @@ std::string server_t::handle_request(std::string const& raw) const
                              rpc_error_code::invalid_request,
                              "Invalid Request");
 
-        auto const it_id = doc.find("id");
-        if (it_id == doc.end() || it_id->is_null())
+        json_doc id_doc = doc.find("id");
+        if (!id_doc.valid() || id_doc.is_null())
             return {};
-        json id_copy = *it_id;
+        json_doc id_copy = id_doc;
 
-        auto const it_method = doc.find("method");
-        if (it_method == doc.end() || !it_method->is_string())
+        json_doc method_doc = doc.find("method");
+        if (!method_doc.valid() || !method_doc.is_string())
             return rpc_error(std::move(id_copy),
                              rpc_error_code::invalid_request,
                              "Invalid Request");
-
-        std::string const& method = it_method->get_ref<json::string_t const&>();
+        std::string method = method_doc.as_string();
         if (method.starts_with("notifications/"))
             return {};
 
-        json const* params = nullptr;
-        if (auto it = doc.find("params"); it != doc.end())
-            params = &*it;
+        json_doc        params_doc{};
+        json_doc const* params      = nullptr;
+        json_doc        params_hold = doc.find("params");
+        if (params_hold.valid()) {
+            params_doc = std::move(params_hold);
+            params     = &params_doc;
+        }
 
         std::string_view target{ method };
         for (auto const& r : k_routes)

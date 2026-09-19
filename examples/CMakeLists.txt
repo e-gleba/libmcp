@@ -37,6 +37,13 @@ function(mcp_example name src)
         install(TARGETS "example_${name}"
                 RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}/mcp-examples")
     endif()
+
+    set_target_properties(
+        "example_${name}" PROPERTIES MSVC_RUNTIME_LIBRARY
+                                     "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+    target_link_options("example_${name}" PRIVATE
+                        "$<$<CXX_COMPILER_FRONTEND_VARIANT:GNU>:-static>")
 endfunction()
 
 mcp_example(parse_schema 01_mcp_envelope.cpp)
