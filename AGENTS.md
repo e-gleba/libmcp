@@ -17,9 +17,12 @@ used during bootstrap, so stdout stays clean for the MCP protocol.
 Before investigating or editing:
 
 1. Confirm `libmcp-project` tools are available.
-2. Read `project://instructions` and task-relevant resources when resource access is supported.
-3. Load the relevant project skill for CMake work or code review.
-4. Use direct file/CMake commands only if MCP startup fails; report the exact failure.
+2. Prefer `libmcp-project` tools over raw shell for CMake, builds, tests,
+   binaries, toolchain, and debugging; every workflow they cover must go
+   through MCP first.
+3. Read `project://instructions` and task-relevant resources when resource access is supported.
+4. Load the relevant project skill for CMake work or code review.
+5. Use direct file/CMake commands only if MCP startup fails; report the exact failure.
 
 OpenCode source of truth is root `opencode.json` plus `.opencode/skills/`.
 

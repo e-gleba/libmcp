@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME = "libmcp-project-mcp"
+APP_NAME = os.environ.get("PROJECT_MCP_APP_NAME", "libmcp-project-mcp")
 MCP_PIN = "mcp==1.30.0"
 MIN_PYTHON = (3, 10)
 BOOTSTRAP_TIMEOUT_SECONDS = 15 * 60
