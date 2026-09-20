@@ -3,9 +3,10 @@
 Unlike the one-shot batch tools in debuggers.py, sessions keep a live
 inferior across tool calls: debug_start creates the session, debug_run
 launches, debug_step/debug_continue advance it, debug_where/debug_vars
-inspect it, debug_stop ends it. All blocking debugger calls run in a worker
-thread with a timeout; a hung inferior is killed instead of hanging the MCP
-call. Requires lldb with its Python API (found via `lldb -P`).
+inspect it, debug_stop ends it. All blocking SB calls run in a worker
+thread with a timeout; on timeout the inferior is stopped (not killed)
+so the session stays alive and the call reports clearly instead of
+hanging the MCP call. Requires lldb with its Python API (found via `lldb -P`).
 """
 
 from __future__ import annotations
@@ -509,7 +510,9 @@ def evaluate(session_id: str, expression: str, frame: int = 0) -> str:
     if frame < 0 or frame >= selected.GetNumFrames():
         raise ValueError(f"Frame {frame} out of range (0..{selected.GetNumFrames() - 1}).")
     target = selected.GetFrameAtIndex(frame)
-    value = target.EvaluateExpression(expression)
+    value = _blocking(
+        item, lambda: target.EvaluateExpression(expression), DEBUG_TIMEOUT_SECONDS
+    )
     lines = [
         f"session: {session_id}",
         f"frame #{frame}: {_location(target)}",
