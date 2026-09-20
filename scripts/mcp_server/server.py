@@ -542,6 +542,10 @@ debug_stop. One session stays alive across calls until debug_stop."""
 
 def main() -> None:
     """Run the MCP server over stdio."""
+    # Main thread: pre-import lldb (signal handlers) so debug tool calls
+    # later hit the cached fast path from worker threads. Best effort:
+    # lldb is optional and tools report its absence clearly.
+    debug_sessions.warmup()
     mcp.run()
 
 

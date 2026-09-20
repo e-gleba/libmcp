@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from . import repo as repo_paths
@@ -30,12 +31,24 @@ _MAX_VALUE_CHARS = 500
 
 
 def _lldb():
-    """Import the lldb API via the path reported by the lldb driver."""
+    """Import the lldb API via the path reported by the lldb driver.
+
+    The lldb package initializes the debugger at import time, including
+    a SIGINT handler, so the first import must run on the main thread;
+    FastMCP executes tools on worker threads. The cached fast path is
+    safe from any thread. Call warmup() once at server startup.
+    """
     global _LLDB, _LLDB_ERROR
     if _LLDB is not None:
         return _LLDB
     if _LLDB_ERROR:
         raise ValueError(f"lldb Python API unavailable: {_LLDB_ERROR}")
+    if threading.current_thread() is not threading.main_thread():
+        raise ValueError(
+            "lldb Python API unavailable: first import must run on the main "
+            "thread (lldb installs signal handlers at import time). Restart "
+            "the server so warmup() pre-imports it."
+        )
     driver = shutil.which("lldb")
     if driver is None:
         _LLDB_ERROR = "lldb is not installed"
@@ -63,8 +76,21 @@ def _lldb():
     return _LLDB
 
 
+def warmup() -> bool:
+    """Import and initialize lldb now; call once on the main thread at startup.
+
+    Returns True when the API is ready. Never raises: lldb is optional,
+    and tool calls report its absence with a clear error instead.
+    """
+    try:
+        _lldb()
+    except Exception:  # noqa: BLE001 - warmup is best-effort by design
+        return False
+    return True
+
+
 class _Session:
-    """One live debugger, target, and inferior plus stdin spool bookkeeping."""
+    """One live debugger, target, and inferior plus stdio spool bookkeeping."""
 
     def __init__(
         self,
@@ -72,6 +98,8 @@ class _Session:
         program: Path,
         args: list[str],
         stdin_file: str | None,
+        stdout_file: str,
+        stderr_file: str,
     ) -> None:
         lldb = _lldb()
         self.id = session_id
@@ -85,16 +113,27 @@ class _Session:
         launch.SetWorkingDirectory(str(ROOT))
         if stdin_file is not None:
             launch.AddOpenFileAction(0, stdin_file, True, False)
+        # Always capture the inferior's own output: without this it
+        # inherits the server's stdio pipe and corrupts the MCP stream.
+        launch.AddOpenFileAction(1, stdout_file, False, True)
+        launch.AddOpenFileAction(2, stderr_file, False, True)
         self._launch = launch
         self.process = None
+        self.launched = False
         self.breakpoints: dict[int, str] = {}
         self.stdin_file = stdin_file
+        self.stdout_file = stdout_file
+        self.stderr_file = stderr_file
 
     def live(self) -> bool:
         """Check whether the inferior is currently running or stopped."""
         if self.process is None or not self.process.IsValid():
             return False
         return self.process.GetState() not in _dead_states()
+
+    def finished(self) -> bool:
+        """Return True if the session launched and the inferior is now gone."""
+        return self.launched and not self.live()
 
 
 def _dead_states() -> frozenset:
@@ -114,22 +153,28 @@ _SESSIONS_LOCK = threading.Lock()
 
 
 def _sweep() -> None:
-    """Destroy debuggers of dead sessions to free slots."""
-    dead = [key for key, item in _SESSIONS.items() if not item.live()]
+    """Destroy debuggers of finished sessions to free slots.
+
+    Sessions that were created but never launched are preserved: they
+    hold no inferior and cost one SBDebugger, and sweeping them is what
+    forced clients to restart in a brand-new session.
+    """
+    dead = [key for key, item in _SESSIONS.items() if item.finished()]
     for key in dead:
         item = _SESSIONS.pop(key)
         _destroy(item)
 
 
 def _destroy(item: _Session) -> None:
-    """Kill the inferior, remove the stdin spool, destroy the debugger."""
+    """Kill the inferior, remove the stdio spools, destroy the debugger."""
     try:
         if item.process is not None and item.process.IsValid():
             item.process.Kill()
     except Exception:  # noqa: BLE001 - best-effort teardown
         pass
-    if item.stdin_file is not None:
-        Path(item.stdin_file).unlink(missing_ok=True)
+    for spool in (item.stdin_file, item.stdout_file, item.stderr_file):
+        if spool is not None:
+            Path(spool).unlink(missing_ok=True)
     _lldb().SBDebugger.Destroy(item.debugger)
 
 
@@ -143,8 +188,13 @@ def _get(session_id: str) -> _Session:
     return item
 
 
-def _blocking(item: _Session, action, timeout: int):
-    """Run a blocking debugger call; kill the inferior on timeout."""
+def _blocking(item: _Session, action: Callable[[], object], timeout: int):
+    """Run a blocking debugger call; interrupt (not kill) on timeout.
+
+    On timeout the inferior is stopped so the session stays alive and the
+    client can retry with a larger timeout_seconds instead of starting
+    over. Only debug_stop destroys the session.
+    """
     outcome: dict = {}
 
     def run() -> None:
@@ -158,13 +208,16 @@ def _blocking(item: _Session, action, timeout: int):
     worker.join(timeout)
     if worker.is_alive():
         try:
-            if item.process is not None and item.process.IsValid():
-                item.process.Kill()
-        except Exception:  # noqa: BLE001 - best-effort teardown
+            process = item.process
+            if process is not None and process.IsValid():
+                process.Stop()
+        except Exception:  # noqa: BLE001 - best-effort interrupt
             pass
         worker.join(10)
         raise TimeoutError(
-            f"debugger call exceeded {timeout} seconds; inferior killed"
+            f"debugger call exceeded {timeout} seconds; "
+            "inferior stopped, session preserved - "
+            "retry with a larger timeout_seconds"
         )
     if "error" in outcome:
         raise RuntimeError(outcome["error"])
@@ -189,8 +242,21 @@ def _stop_reason(thread) -> str:
     return text or f"reason={thread.GetStopReason()}"
 
 
+def _inferior_output(item: _Session, limit: int = 2000) -> str | None:
+    """Return the bounded tail of the inferior's captured stdout/stderr."""
+    chunks = []
+    for label, spool in (("stdout", item.stdout_file), ("stderr", item.stderr_file)):
+        try:
+            text = Path(spool).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            chunks.append(f"[{label}]\n{text[-limit:]}")
+    return "\n".join(chunks).strip() or None
+
+
 def _format_stop(item: _Session) -> str:
-    """Summarize process state, stop reason, location, and threads."""
+    """Summarize process state, stop reason, location, threads, and output."""
     lldb = _lldb()
     process = item.process
     lines = [
@@ -200,18 +266,21 @@ def _format_stop(item: _Session) -> str:
     ]
     if process.GetState() == lldb.eStateExited:
         lines.append(f"exit_status: {process.GetExitStatus()}")
-        return "\n".join(lines)
-    selected = process.GetSelectedThread()
-    lines.append(f"stop: {_stop_reason(selected)}")
-    lines.append(f"location: {_location(selected.GetSelectedFrame())}")
-    for index in range(process.GetNumThreads()):
-        thread = process.GetThreadAtIndex(index)
-        marker = "*" if thread.GetIndexID() == selected.GetIndexID() else " "
-        lines.append(
-            f"{marker} thread {thread.GetIndexID()} "
-            f"({thread.GetName() or 'unnamed'}): "
-            f"{_location(thread.GetFrameAtIndex(0))}"
-        )
+    else:
+        selected = process.GetSelectedThread()
+        lines.append(f"stop: {_stop_reason(selected)}")
+        lines.append(f"location: {_location(selected.GetSelectedFrame())}")
+        for index in range(process.GetNumThreads()):
+            thread = process.GetThreadAtIndex(index)
+            marker = "*" if thread.GetIndexID() == selected.GetIndexID() else " "
+            lines.append(
+                f"{marker} thread {thread.GetIndexID()} "
+                f"({thread.GetName() or 'unnamed'}): "
+                f"{_location(thread.GetFrameAtIndex(0))}"
+            )
+    output = _inferior_output(item)
+    if output is not None:
+        lines.append(f"output:\n{output}")
     return "\n".join(lines)
 
 
@@ -248,18 +317,30 @@ def start(program: Path, args: list[str], stdin_text: str) -> str:
         if len(_SESSIONS) >= _MAX_SESSIONS:
             raise ValueError(f"Too many debug sessions (max {_MAX_SESSIONS}). Stop one first.")
         session_id = f"dbg-{uuid.uuid4().hex[:8]}"
-        stdin_file = None
-        if stdin_text:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".stdin", delete=False, encoding="utf-8"
-            ) as spool:
-                spool.write(stdin_text)
-                stdin_file = spool.name
+        # Always spool stdin (empty file when no input): the inferior must
+        # never inherit the server's stdio pipe, where a blocking read
+        # would consume MCP protocol bytes and kill the connection.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".stdin", delete=False, encoding="utf-8"
+        ) as spool:
+            spool.write(stdin_text)
+            stdin_file = spool.name
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".stdout", delete=False, encoding="utf-8"
+        ) as spool:
+            stdout_file = spool.name
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".stderr", delete=False, encoding="utf-8"
+        ) as spool:
+            stderr_file = spool.name
         try:
-            item = _Session(session_id, program, args, stdin_file)
+            item = _Session(
+                session_id, program, args, stdin_file, stdout_file, stderr_file
+            )
         except Exception:
-            if stdin_file is not None:
-                Path(stdin_file).unlink(missing_ok=True)
+            for spool in (stdin_file, stdout_file, stderr_file):
+                if spool is not None:
+                    Path(spool).unlink(missing_ok=True)
             raise
         _SESSIONS[session_id] = item
     return f"session: {session_id}\nprogram: {item.program_label}\nstate: created"
@@ -302,6 +383,12 @@ def launch(session_id: str, timeout: int = DEBUG_TIMEOUT_SECONDS) -> str:
     item = _get(session_id)
     if item.live():
         raise ValueError(f"Session {session_id} already has a live inferior. Use debug_continue.")
+    if item.launched:
+        for spool in (item.stdout_file, item.stderr_file):
+            try:
+                Path(spool).write_text("", encoding="utf-8")
+            except OSError:
+                pass
     lldb = _lldb()
     error = lldb.SBError()
 
@@ -312,6 +399,7 @@ def launch(session_id: str, timeout: int = DEBUG_TIMEOUT_SECONDS) -> str:
     _blocking(item, action, timeout)
     if not error.Success():
         raise ValueError(f"Launch failed: {error.GetCString()}")
+    item.launched = True
     return _format_stop(item)
 
 
