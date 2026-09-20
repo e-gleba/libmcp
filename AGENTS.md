@@ -3,31 +3,22 @@
 C++23. C+CXX. CMake 4.3+. Ninja Multi-Config. CPM. doctest + CTest.
 Think first. Minimal diff. Verify with build + tests.
 
-## AI discovery
+## OpenCode discovery
 
-- `AGENTS.md` contains always-on repository rules.
-- `.github/skills/` contains task-specific CMake and review workflows; load the relevant skill when discovered.
-- `.vscode/mcp.json` auto-configures the local stdio server for VS Code clients.
-- `.github/mcp.json` mirrors the GitHub repository MCP JSON, but GitHub cloud agents do not read this file automatically. Repository admins must paste it into **Settings > Copilot > MCP servers**.
-- GitHub cloud agents currently use MCP tools only. Resources and prompts remain available to local MCP clients.
+OpenCode automatically loads this file, root `opencode.json`, and relevant
+`.opencode/skills/*/SKILL.md` files when started anywhere inside this worktree.
+Do not ask the user to start or register the project MCP manually: OpenCode starts
+the enabled `libmcp-project` local server from `opencode.json`.
 
-## Project MCP — start first
+Before investigating or editing:
 
-Start the repository MCP before investigating or editing when the client supports MCP:
+1. Confirm `libmcp-project` tools are available.
+2. Read `project://instructions` and task-relevant resources when resource access is supported.
+3. Load the relevant project skill for CMake work or code review.
+4. Use direct file/CMake commands only if MCP startup fails; report the exact failure.
 
-```bash
-uv run --project scripts libmcp-project-mcp
-```
-
-Configure it as a stdio server with command `uv` and args
-`run --project scripts libmcp-project-mcp`. Then read
-`project://instructions` and relevant resources; use its project, CMake, test,
-and Git status tools instead of guessing repository state. If MCP cannot start,
-continue with direct file and CMake inspection and report the limitation.
-
-For GitHub's repository MCP settings, start with `.github/mcp.json`. Keep its
-default allowlist read-only. Add `cmake_configure`, `cmake_build`, or `ctest` only
-when autonomous command execution is wanted.
+`.vscode/mcp.json` and `.github/mcp.json` are compatibility configs for other
+clients. OpenCode source of truth is root `opencode.json` plus `.opencode/skills/`.
 
 ## Build
 
