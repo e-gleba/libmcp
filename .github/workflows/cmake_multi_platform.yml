@@ -298,7 +298,7 @@ jobs:
           api-level: 30
           arch: x86_64
           target: default
-          disable-annotations: true
+          disable-animations: true
           script: cd ${{ env.ANDROID_PROJECT_DIR }} && ./gradlew --stacktrace :app:connectedDebugAndroidTest --info
       # Diagnostics for the upload below: when the test step fails before AGP
       # writes reports (build error, emulator boot failure) the upload errors
