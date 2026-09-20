@@ -4,11 +4,8 @@
         "libmcp-project": {
             "type": "local",
             "command": [
-                "uv",
-                "run",
-                "--project",
-                "scripts",
-                "libmcp-project-mcp"
+                "python3",
+                "scripts/libmcp_project_mcp.py"
             ],
             "enabled": true
         }
