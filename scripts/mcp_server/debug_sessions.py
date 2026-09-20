@@ -225,12 +225,39 @@ def _blocking(item: _Session, action: Callable[[], object], timeout: int):
 
 
 def _location(frame) -> str:
-    """Render function, file, and line for a stack frame."""
+    """Render function, file, line, and PC for a stack frame."""
     name = frame.GetFunctionName() or "??"
+    try:
+        pc = f" [pc 0x{frame.GetPC():x}]"
+    except Exception:  # noqa: BLE001 - exotic frames
+        pc = ""
     entry = frame.GetLineEntry()
     if entry.IsValid():
-        return f"{name} at {entry.GetFileSpec().GetFilename()}:{entry.GetLine()}"
-    return name
+        return f"{name} at {entry.GetFileSpec().GetFilename()}:{entry.GetLine()}{pc}"
+    return f"{name}{pc}"
+
+
+def _render_value(value) -> str:
+    """Render one variable as `name = value (type)`."""
+    return f"{value.GetName()} = {_value_text(value)} ({value.GetTypeName()})"
+
+
+def _frame_summary(frame, *, arguments_only: bool, limit: int) -> list[str]:
+    """Collect bounded variable lines for one frame; never raises."""
+    try:
+        values = frame.GetVariables(arguments_only, not arguments_only, False, True)
+    except Exception:  # noqa: BLE001 - frame may be gone
+        return []
+    lines = []
+    for value in values:
+        if len(lines) >= limit:
+            lines.append(f"... truncated at {limit}")
+            break
+        try:
+            lines.append(_render_value(value))
+        except Exception:  # noqa: BLE001, S112 - skip unreadable values
+            continue
+    return lines
 
 
 def _stop_reason(thread) -> str:
@@ -269,7 +296,8 @@ def _format_stop(item: _Session) -> str:
     else:
         selected = process.GetSelectedThread()
         lines.append(f"stop: {_stop_reason(selected)}")
-        lines.append(f"location: {_location(selected.GetSelectedFrame())}")
+        frame = selected.GetSelectedFrame()
+        lines.append(f"location: {_location(frame)}")
         for index in range(process.GetNumThreads()):
             thread = process.GetThreadAtIndex(index)
             marker = "*" if thread.GetIndexID() == selected.GetIndexID() else " "
@@ -278,6 +306,12 @@ def _format_stop(item: _Session) -> str:
                 f"({thread.GetName() or 'unnamed'}): "
                 f"{_location(thread.GetFrameAtIndex(0))}"
             )
+        locals_lines = _frame_summary(frame, arguments_only=False, limit=15)
+        lines.append("locals (frame #0):")
+        if locals_lines:
+            lines.extend(f"  {entry}" for entry in locals_lines)
+        else:
+            lines.append("  (no variables)")
     output = _inferior_output(item)
     if output is not None:
         lines.append(f"output:\n{output}")
@@ -431,7 +465,7 @@ def step(session_id: str, mode: str, timeout: int = DEBUG_TIMEOUT_SECONDS) -> st
 
 
 def where(session_id: str, depth: int = 10) -> str:
-    """List threads plus the selected thread's backtrace."""
+    """List threads plus the selected thread's backtrace with frame arguments."""
     item = _get(session_id)
     if not item.live():
         raise ValueError(f"Session {session_id} has no live inferior.")
@@ -439,7 +473,10 @@ def where(session_id: str, depth: int = 10) -> str:
     selected = item.process.GetSelectedThread()
     lines.append(f"backtrace (thread {selected.GetIndexID()}):")
     for index in range(min(selected.GetNumFrames(), max(1, depth))):
-        lines.append(f"  #{index} {_location(selected.GetFrameAtIndex(index))}")
+        frame = selected.GetFrameAtIndex(index)
+        lines.append(f"  #{index} {_location(frame)}")
+        for entry in _frame_summary(frame, arguments_only=True, limit=8):
+            lines.append(f"      arg {entry}")
     return "\n".join(lines)
 
 
@@ -453,14 +490,10 @@ def variables(session_id: str, frame: int = 0) -> str:
         raise ValueError(f"Frame {frame} out of range (0..{selected.GetNumFrames() - 1}).")
     target = selected.GetFrameAtIndex(frame)
     lines = [f"session: {session_id}", f"frame #{frame}: {_location(target)}"]
-    shown = 0
-    for value in target.GetVariables(True, True, False, True):
-        if shown >= _MAX_VARS:
-            lines.append(f"... truncated at {_MAX_VARS} variables")
-            break
-        lines.append(f"{value.GetName()} = {_value_text(value)} ({value.GetTypeName()})")
-        shown += 1
-    if not shown:
+    entries = _frame_summary(target, arguments_only=False, limit=_MAX_VARS)
+    if entries:
+        lines.extend(entries)
+    else:
         lines.append("(no variables)")
     return "\n".join(lines)
 
