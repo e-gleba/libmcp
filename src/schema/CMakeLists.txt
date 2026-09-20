@@ -2,29 +2,19 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 include(CheckIncludeFileCXX)
 
+# Regeneration needs network (fetch schema.ts) + Node/npm (quicktype).
+# Default OFF: use the committed pre-generated header, so normal builds
+# (incl. MSVC / MinGW CI without Node) never spawn npm at configure time.
+option(MCP_SCHEMA_REGENERATE
+       "Regenerate MCP schema header from upstream schema.ts via npm quicktype"
+       OFF)
+
 set(mcp_date
     "2026-07-28"
     CACHE STRING "MCP schema version")
 set(mcp_hpp
     "${CMAKE_CURRENT_LIST_DIR}/${mcp_date}/schema.hpp"
     CACHE PATH "Generated MCP header")
-set(mcp_url
-    "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/${mcp_date}/schema.ts"
-)
-
-set(mcp_tmp_dir "${CMAKE_CURRENT_BINARY_DIR}/${mcp_date}")
-set(mcp_ts "${mcp_tmp_dir}/schema.ts")
-set(mcp_full "${mcp_tmp_dir}/schema.full.hpp")
-set(mcp_body_tmp "${mcp_tmp_dir}/schema.body.hpp")
-
-string(
-    REPLACE "-"
-            "_"
-            mcp_ns_suffix
-            "${mcp_date}")
-set(mcp_ns "mcp::v${mcp_ns_suffix}")
-
-find_program(npm_executable NAMES npm REQUIRED)
 
 foreach(
     mcp_hdr IN
@@ -42,6 +32,84 @@ foreach(
 endforeach()
 unset(mcp_hdr)
 unset(mcp_hdr_up)
+
+string(
+    REPLACE "-"
+            "."
+            mcp_version
+            "${mcp_date}")
+
+if(NOT TARGET mcp_schema)
+    add_library(mcp_schema INTERFACE)
+    add_library(mcp::schema ALIAS mcp_schema)
+    target_sources(
+        mcp_schema
+        INTERFACE FILE_SET
+                  HEADERS
+                  BASE_DIRS
+                  "${CMAKE_CURRENT_LIST_DIR}"
+                  FILES
+                  "${mcp_hpp}")
+    target_include_directories(
+        mcp_schema SYSTEM
+        INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
+                  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/mcp>)
+    target_compile_features(mcp_schema INTERFACE cxx_std_20)
+    install(
+        TARGETS mcp_schema
+        EXPORT mcp_targets
+        FILE_SET HEADERS
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mcp")
+    install(
+        EXPORT mcp_targets
+        NAMESPACE mcp::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/mcp-config-version.cmake"
+        VERSION "${mcp_version}"
+        COMPATIBILITY ExactVersion)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
+         [[include("${CMAKE_CURRENT_LIST_DIR}/mcp_targets.cmake")]])
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
+                  "${CMAKE_CURRENT_BINARY_DIR}/mcp-config-version.cmake"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
+endif()
+
+# Fast path first: committed header, no network/npm.
+if(NOT MCP_SCHEMA_REGENERATE)
+    if(NOT EXISTS "${mcp_hpp}")
+        message(
+            FATAL_ERROR
+                "pre-generated MCP header missing: ${mcp_hpp}; re-configure with -DMCP_SCHEMA_REGENERATE=ON (needs network + Node/npm)"
+        )
+    endif()
+    message(STATUS "using pre-generated MCP header: ${mcp_hpp}")
+    return()
+endif()
+
+# --- regeneration below (needs network + Node/npm) ---
+
+set(mcp_url
+    "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/${mcp_date}/schema.ts"
+)
+
+set(mcp_tmp_dir "${CMAKE_CURRENT_BINARY_DIR}/${mcp_date}")
+set(mcp_ts "${mcp_tmp_dir}/schema.ts")
+set(mcp_full "${mcp_tmp_dir}/schema.full.hpp")
+set(mcp_body_tmp "${mcp_tmp_dir}/schema.body.hpp")
+
+string(
+    REPLACE "-"
+            "_"
+            mcp_ns_suffix
+            "${mcp_date}")
+set(mcp_ns "mcp::v${mcp_ns_suffix}")
+
+# Prefer npm.cmd on Windows: the extensionless
+# 'C:/Program Files/nodejs/npm' is a POSIX shell script, and
+# CreateProcess fails on it with
+# 'inappropriate file type or format'. A .cmd still needs cmd /c.
+find_program(npm_executable NAMES npm.cmd npm REQUIRED)
 
 cmake_path(
     GET
@@ -75,18 +143,36 @@ file(REMOVE "${mcp_ts}.tmp")
 message(CHECK_PASS "done")
 
 message(CHECK_START "quicktype TS->C++ schema-only")
-execute_process(
-    COMMAND
-        "${npm_executable}" exec --yes -- quicktype --src-lang typescript --lang
-        c++ --code-format with-struct --just-types --type-style original-case
-        --member-style original-case --enumerator-style original-case --no-boost
-        --source-style single-source --out "${mcp_full}" "${mcp_ts}"
-    WORKING_DIRECTORY
-        "${mcp_tmp_dir}"
-        COMMAND_ECHO
-        STDOUT
-        COMMAND_ERROR_IS_FATAL
-        ANY)
+# Host check: cross Linux -> Windows must run the host's npm, not cmd.
+if(CMAKE_HOST_WIN32)
+    execute_process(
+        COMMAND
+            cmd /c ${npm_executable} exec --yes -- quicktype --src-lang
+            typescript --lang c++ --code-format with-struct --just-types
+            --type-style original-case --member-style original-case
+            --enumerator-style original-case --no-boost --source-style
+            single-source --out "${mcp_full}" "${mcp_ts}"
+        WORKING_DIRECTORY
+            "${mcp_tmp_dir}"
+            COMMAND_ECHO
+            STDOUT
+            COMMAND_ERROR_IS_FATAL
+            ANY)
+else()
+    execute_process(
+        COMMAND
+            "${npm_executable}" exec --yes -- quicktype --src-lang typescript
+            --lang c++ --code-format with-struct --just-types --type-style
+            original-case --member-style original-case --enumerator-style
+            original-case --no-boost --source-style single-source --out
+            "${mcp_full}" "${mcp_ts}"
+        WORKING_DIRECTORY
+            "${mcp_tmp_dir}"
+            COMMAND_ECHO
+            STDOUT
+            COMMAND_ERROR_IS_FATAL
+            ANY)
+endif()
 message(CHECK_PASS "done")
 
 function(mcp_strip_optional line_var)
@@ -232,7 +318,7 @@ file(
     [[#pragma once
 // generated from MCP schema @mcp_date@, do not edit
 // See https://modelcontextprotocol.io/docs/2026-07-28/getting-started/intro
-// See https://github.com/modelcontextprotocol/modelcontextprotocol/tree/main/schema
+// See https://github.com/modelcontextprotocol/inspector/blob/main/clients/cli/README.md
 #include <cstdint>
 #include <map>
 #include <string>
@@ -260,45 +346,3 @@ file(
     "${mcp_ts}"
     "${mcp_full}"
     "${mcp_body_tmp}")
-
-string(
-    REPLACE "-"
-            "."
-            mcp_version
-            "${mcp_date}")
-
-if(NOT TARGET mcp_schema)
-    add_library(mcp_schema INTERFACE)
-    add_library(mcp::schema ALIAS mcp_schema)
-    target_sources(
-        mcp_schema
-        INTERFACE FILE_SET
-                  HEADERS
-                  BASE_DIRS
-                  "${CMAKE_CURRENT_LIST_DIR}"
-                  FILES
-                  "${mcp_hpp}")
-    target_include_directories(
-        mcp_schema SYSTEM
-        INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
-                  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/mcp>)
-    target_compile_features(mcp_schema INTERFACE cxx_std_20)
-    install(
-        TARGETS mcp_schema
-        EXPORT mcp_targets
-        FILE_SET HEADERS
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mcp")
-    install(
-        EXPORT mcp_targets
-        NAMESPACE mcp::
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
-    write_basic_package_version_file(
-        "${CMAKE_CURRENT_BINARY_DIR}/mcp-config-version.cmake"
-        VERSION "${mcp_version}"
-        COMPATIBILITY ExactVersion)
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
-         [[include("${CMAKE_CURRENT_LIST_DIR}/mcp_targets.cmake")]])
-    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mcp-config.cmake"
-                  "${CMAKE_CURRENT_BINARY_DIR}/mcp-config-version.cmake"
-            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mcp")
-endif()

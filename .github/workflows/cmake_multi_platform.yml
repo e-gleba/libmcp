@@ -48,6 +48,7 @@ permissions:
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm_cache
   ANDROID_PROJECT_DIR: ${{ github.workspace }}/android_project
+  INSPECTOR_VERSION: "2.7.0"
   GRADLE_OPTS: >-
     -Dorg.gradle.daemon=false
     -Dorg.gradle.configureondemand=true
@@ -98,6 +99,27 @@ jobs:
           apt-packages: ${{ matrix.apt }}
       - name: Build and test
         run: cmake --workflow --preset ${{ matrix.preset }}
+      - name: Set up Node 22
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+      # Inspector 2.7.0 CLI has no ping method — 7 probes, each re-connects
+      # stdio, so liveness is covered without it.
+      - name: MCP Inspector stdio smoke
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bin=$(find build/${{ matrix.artifact_name }} -type f -name 'example_parse_schema*' | head -n 1)
+          test -n "$bin" || { echo "::error::example_parse_schema not found"; exit 1; }
+          cli="npx --yes @modelcontextprotocol/inspector@${{ env.INSPECTOR_VERSION }} --cli $bin --connect-timeout 10000 --format json"
+          $cli --method initialize | jq -e '.result.protocolVersion' > /dev/null
+          $cli --method tools/list | jq -e 'any(.result.tools[]; .name == "get_weather")' > /dev/null
+          $cli --method tools/list --strict | jq -e '([.schemaFindings[]? | select(.severity == "error")] | length) == 0' > /dev/null
+          $cli --method tools/call --tool-name get_weather --tool-args-json '{"location":"Minsk"}' | jq -e '.result.isError != true' > /dev/null
+          $cli --method resources/list | jq -e '.result.resources | type == "array"' > /dev/null
+          $cli --method resources/templates/list | jq -e '.result.resourceTemplates | type == "array"' > /dev/null
+          $cli --method prompts/list | jq -e '.result.prompts | type == "array"' > /dev/null
       - name: Build documentation
         if: matrix.compiler == 'clang'
         run: cmake --build --preset linux_clang_x86_64_docs

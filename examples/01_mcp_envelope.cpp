@@ -20,6 +20,8 @@
 
 namespace app {
 
+// NDK libc++ (and old libstdc++): <stop_token>/<jthread> may be absent even
+// in C++20/23 mode. Close() unblocks pop(); workers poll closed_ instead.
 template <typename H>
 concept request_handler = requires(H& h, std::string const& s) {
     { h.handle_request(s) } -> std::convertible_to<std::string>;
@@ -96,12 +98,11 @@ public:
         cv_.notify_one();
     }
 
-    [[nodiscard]] bool pop(T& out, std::stop_token tok)
+    [[nodiscard]] bool pop(T& out)
     {
         std::unique_lock<std::mutex> lock{ mu_ };
-        bool const                   ok{ cv_.wait(
-            lock, tok, [this] { return closed_ || !queue_.empty(); }) };
-        if (!ok || queue_.empty()) {
+        cv_.wait(lock, [this] { return closed_ || !queue_.empty(); });
+        if (queue_.empty()) {
             return false;
         }
         out = std::move(queue_.front());
@@ -119,10 +120,10 @@ public:
     }
 
 private:
-    std::mutex                  mu_{};
-    std::condition_variable_any cv_{};
-    std::deque<T>               queue_{};
-    bool                        closed_{ false };
+    std::mutex              mu_{};
+    std::condition_variable cv_{};
+    std::deque<T>           queue_{};
+    bool                    closed_{ false };
 };
 
 class frame_assembler final
@@ -215,6 +216,39 @@ private:
     return body;
 }
 
+// Closes the channel and joins every spawned worker on scope exit, so an
+// exception between emplace_back and the manual join cannot destroy a
+// joinable std::thread (std::terminate) before the outer catch runs.
+class worker_pool final
+{
+public:
+    worker_pool(channel<std::string>& in,
+                std::vector<std::thread>& workers) noexcept
+        : in_{ in }
+        , workers_{ workers }
+    {
+    }
+
+    worker_pool(worker_pool const&)            = delete;
+    worker_pool(worker_pool&&)                 = delete;
+    worker_pool& operator=(worker_pool const&) = delete;
+    worker_pool& operator=(worker_pool&&)      = delete;
+
+    ~worker_pool() noexcept
+    {
+        in_.close();
+        for (auto& w : workers_) {
+            if (w.joinable()) {
+                w.join();
+            }
+        }
+    }
+
+private:
+    channel<std::string>&     in_;
+    std::vector<std::thread>& workers_;
+};
+
 } // namespace app
 
 int main()
@@ -222,11 +256,12 @@ int main()
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
 
+    bool io_ok{ true };
     try {
         app::channel<std::string> in{};
         std::mutex                write_mu{};
         std::mutex                server_mu{};
-        std::atomic<bool>         io_ok{ true };
+        std::atomic<bool>         io_flag{ true };
 
         libmcp::server_info_t info{};
         libmcp::server_t      server{ info };
@@ -249,32 +284,35 @@ int main()
               static_cast<std::size_t>(
                   std::thread::hardware_concurrency()) }) };
 
-        std::vector<std::jthread> workers{};
+        std::vector<std::thread> workers{};
         workers.reserve(n_workers);
+        // Pool declared before emplace_back: any throw after the first
+        // spawned thread still closes the channel and joins on unwind.
+        app::worker_pool pool{ in, workers };
         for ([[maybe_unused]] auto _ :
              std::views::iota(std::size_t{ 0 }, n_workers)) {
-            workers.emplace_back([&in, &write_mu, &server_mu, &io_ok, &server](
-                                     std::stop_token tok) {
-                std::string req{};
-                while (in.pop(req, tok)) {
-                    std::string res{};
-                    try {
-                        std::lock_guard<std::mutex> slock{ server_mu };
-                        res = server.handle_request(req);
-                    } catch (...) {
-                        res = std::string{ app::k_handler_error };
+            workers.emplace_back(
+                [&in, &write_mu, &server_mu, &io_flag, &server] {
+                    std::string req{};
+                    while (in.pop(req)) {
+                        std::string res{};
+                        try {
+                            std::lock_guard<std::mutex> slock{ server_mu };
+                            res = server.handle_request(req);
+                        } catch (...) {
+                            res = std::string{ app::k_handler_error };
+                        }
+                        if (res.empty()) {
+                            continue;
+                        }
+                        std::lock_guard<std::mutex> wlock{ write_mu };
+                        std::cout << res << std::endl;
+                        if (!std::cout) {
+                            io_flag.store(false, std::memory_order_relaxed);
+                            break;
+                        }
                     }
-                    if (res.empty()) {
-                        continue;
-                    }
-                    std::lock_guard<std::mutex> wlock{ write_mu };
-                    std::cout << res << std::endl;
-                    if (!std::cout) {
-                        io_ok.store(false, std::memory_order_relaxed);
-                        break;
-                    }
-                }
-            });
+                });
         }
 
         app::frame_assembler framer{};
@@ -307,12 +345,12 @@ int main()
         if (auto msg{ framer.flush() }) {
             in.push(std::move(msg.value()));
         }
-        in.close();
-
-        bool const ok{ io_ok.load(std::memory_order_relaxed) &&
-                       static_cast<bool>(std::cout.good()) };
-        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        io_ok = io_flag.load(std::memory_order_relaxed) &&
+                static_cast<bool>(std::cout.good());
+        // pool destructor closes + joins here on both paths.
     } catch (...) {
         return EXIT_FAILURE;
     }
+
+    return io_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

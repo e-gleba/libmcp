@@ -56,36 +56,39 @@ target_include_directories(
     mcp_handler PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
                        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-option(MCP_HANDLER_USE_JSONCPP "Use jsoncpp backend instead of nlohmann_json"
-       ON)
+# Single backend: jsoncpp. nlohmann_json.cpp stays HEADER_FILE_ONLY so the
+# glob keeps working without compiling a second backend.
+set_source_files_properties(
+    ${CMAKE_CURRENT_LIST_DIR}/detail/nlohmann_json.cpp PROPERTIES
+    HEADER_FILE_ONLY TRUE)
 
+# Build-only deps: BUILD_INTERFACE keeps headers/flags for this build while
+# stripping every usage requirement from the install interface, so
+# install(EXPORT) never demands an export set and nothing leaks to consumers.
 target_link_libraries(
     mcp_handler
     PRIVATE
         $<BUILD_INTERFACE:mcp::schema>
         $<BUILD_INTERFACE:warnings>
-        $<$<BOOL:${MCP_HANDLER_USE_JSONCPP}>:$<BUILD_INTERFACE:jsoncpp_static>>
-        $<$<NOT:$<BOOL:${MCP_HANDLER_USE_JSONCPP}>>:$<BUILD_INTERFACE:nlohmann_json::nlohmann_json>>
-)
+        $<BUILD_INTERFACE:jsoncpp_static>)
 
-if(MCP_HANDLER_USE_JSONCPP)
-    set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/detail/jsoncpp.cpp
-                                PROPERTIES HEADER_FILE_ONLY FALSE)
-    set_source_files_properties(
-        ${CMAKE_CURRENT_LIST_DIR}/detail/nlohmann_json.cpp
-        PROPERTIES HEADER_FILE_ONLY TRUE)
-else()
-    set_source_files_properties(
-        ${CMAKE_CURRENT_LIST_DIR}/detail/nlohmann_json.cpp
-        PROPERTIES HEADER_FILE_ONLY FALSE)
-    set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/detail/jsoncpp.cpp
-                                PROPERTIES HEADER_FILE_ONLY TRUE)
-endif()
+# MinGW cross: jsoncpp_static's usage include dir does not propagate through
+# the BUILD_INTERFACE-wrapped link on this generator (missing
+# jsoncpp/json/json.h). Target-local PRIVATE include, never exported.
+target_include_directories(
+    mcp_handler
+    PRIVATE
+        $<TARGET_PROPERTY:jsoncpp_static,INTERFACE_INCLUDE_DIRECTORIES>)
 
+# Static GNU runtimes via genex, Android excluded: Bionic has no static
+# system libs, and -static pulls compiler-rt builtins with LIBC_N-versioned
+# __aeabi_* symbols that fail the shared link (--no-undefined-version).
+# (Full -static is never used: it segfaults under the steamrt platform
+# loader, which ships its own libstdc++.)
 target_link_options(
     mcp_handler
     PUBLIC
-    "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<CXX_COMPILER_ID:AppleClang>>>:-static-libgcc;-static-libstdc++>"
+        "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<CXX_COMPILER_ID:AppleClang>>,$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>>>:-static-libgcc;-static-libstdc++>"
 )
 
 install(
@@ -95,7 +98,7 @@ install(
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
             FILE_SET HEADERS
-            DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
     INCLUDES
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
