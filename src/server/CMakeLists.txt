@@ -83,6 +83,8 @@ target_include_directories(
 # Static GNU runtimes via genex, Android excluded: Bionic has no static
 # system libs, and -static pulls compiler-rt builtins with LIBC_N-versioned
 # __aeabi_* symbols that fail the shared link (--no-undefined-version).
+# (Full -static is never used: it segfaults under the steamrt platform
+# loader, which ships its own libstdc++.)
 target_link_options(
     mcp_handler
     PUBLIC
@@ -96,7 +98,7 @@ install(
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
             FILE_SET HEADERS
-            DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
     INCLUDES
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 

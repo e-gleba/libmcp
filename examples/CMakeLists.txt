@@ -42,12 +42,14 @@ function(mcp_example name src)
         "example_${name}" PROPERTIES MSVC_RUNTIME_LIBRARY
                                      "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-    # Static GNU link via genex, Android excluded: -static on a shared Bionic
-    # link breaks on LIBC_N-versioned compiler-rt symbols (__aeabi_*).
+    # Static GNU runtimes (not full -static): -static bakes the SDK's
+    # libstdc++/libgcc into the binary, which then segfaults (exit 139)
+    # under the steamrt platform loader that ships its own libstdc++.
+    # Android excluded: Bionic has no static system libs at all.
     target_link_options(
         "example_${name}"
         PRIVATE
-            "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>>>:-static>"
+            "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>>>:-static-libgcc;-static-libstdc++>"
     )
 endfunction()
 
