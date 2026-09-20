@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Annotated, Literal
@@ -18,7 +19,8 @@ mcp = FastMCP(
     "libmcp-project",
     instructions=(
         "Use resources for project context before editing. Use tools for CMake "
-        "discovery, configure, build, and tests. All paths stay inside the repository."
+        "discovery, configure, build, test, and debugging. All paths stay inside "
+        "the repository."
     ),
 )
 
@@ -41,10 +43,17 @@ def _read_text(path: str) -> str:
     return candidate.read_text(encoding="utf-8")
 
 
+def _decode_output(output: str | bytes | None) -> str:
+    """Normalize subprocess output across normal and timeout paths."""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace").rstrip()
+    return (output or "").rstrip()
+
+
 def _run(command: list[str]) -> str:
     """Run a fixed command without a shell and return bounded-time diagnostics."""
     try:
-        result = subprocess.run(  # noqa: S603 - argv uses fixed executables and validated args.
+        result = subprocess.run(
             command,
             cwd=ROOT,
             check=False,
@@ -54,17 +63,22 @@ def _run(command: list[str]) -> str:
         )
     except subprocess.TimeoutExpired as error:
         output = "\n".join(
-            part.rstrip()
-            for part in (error.stdout or "", error.stderr or "")
+            part
+            for part in (_decode_output(error.stdout), _decode_output(error.stderr))
             if part
         )
+        suffix = f"\n{output}" if output else ""
         return (
             f"exit_code: timeout\ncommand exceeded {COMMAND_TIMEOUT_SECONDS} seconds"
-            f"{f'\n{output}' if output else ''}"
+            + suffix
         )
+    except OSError as error:
+        return f"exit_code: launch_error\n{error}"
 
     output = "\n".join(
-        part for part in (result.stdout.rstrip(), result.stderr.rstrip()) if part
+        part
+        for part in (_decode_output(result.stdout), _decode_output(result.stderr))
+        if part
     )
     return f"exit_code: {result.returncode}\n{output}".rstrip()
 
@@ -102,17 +116,6 @@ def cmake_presets() -> str:
     return _read_text("CMakePresets.json")
 
 
-@mcp.resource(
-    "project://file/{path}",
-    title="Repository file",
-    description="UTF-8 project file, restricted to the repository root.",
-    mime_type="text/plain",
-)
-def project_file(path: str) -> str:
-    """Return a bounded repository file."""
-    return _read_text(path)
-
-
 @mcp.tool()
 def project_tree(
     path: Annotated[str, Field(description="Repository-relative directory")] = ".",
@@ -134,6 +137,20 @@ def project_tree(
         suffix = "/" if candidate.is_dir() else ""
         lines.append(f"{relative.as_posix()}{suffix}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def read_project_file(
+    path: Annotated[str, Field(description="Repository-relative UTF-8 file")],
+) -> str:
+    """Read a bounded UTF-8 file from inside the repository."""
+    return _read_text(path)
+
+
+@mcp.tool()
+def git_status() -> str:
+    """Return machine-readable repository status without changing files."""
+    return _run(["git", "status", "--short", "--branch"])
 
 
 @mcp.tool()
@@ -177,17 +194,38 @@ def ctest(
 
 
 @mcp.tool()
-def git_status() -> str:
-    """Return machine-readable repository status without changing files."""
-    return _run(["git", "status", "--short", "--branch"])
+def available_debuggers() -> str:
+    """List supported debuggers installed on this host."""
+    lines: list[str] = []
+    for name in ("gdb", "lldb", "cdb"):
+        path = shutil.which(name)
+        if path:
+            lines.append(f"{name}: {path}")
+    return "\n".join(lines) if lines else "No supported debugger found."
 
 
 @mcp.tool()
-def read_project_file(
-    path: Annotated[str, Field(description="Repository-relative UTF-8 file")],
+def debug_executable(
+    executable: Annotated[str, Field(description="Repository-relative executable")],
+    debugger: Literal["auto", "gdb", "lldb", "cdb"] = "auto",
 ) -> str:
-    """Read a bounded UTF-8 file from inside the repository."""
-    return _read_text(path)
+    """Run an executable under an installed debugger in non-interactive mode."""
+    program = _inside_root(executable)
+    if not program.is_file():
+        raise ValueError(f"Not a file: {executable}")
+
+    candidates = ("gdb", "lldb", "cdb") if debugger == "auto" else (debugger,)
+    selected = next((name for name in candidates if shutil.which(name)), None)
+    if selected is None:
+        raise ValueError(f"Debugger not installed: {debugger}")
+
+    if selected == "gdb":
+        command = ["gdb", "--batch", "-ex", "run", "-ex", "thread apply all bt", "--args", str(program)]
+    elif selected == "lldb":
+        command = ["lldb", "--batch", "-o", "run", "-o", "thread backtrace all", "--", str(program)]
+    else:
+        command = ["cdb", "-c", "g;~*k;q", str(program)]
+    return _run(command)
 
 
 @mcp.prompt()

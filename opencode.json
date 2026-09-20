@@ -1,13 +1,13 @@
 {
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "libmcp-project": {
-            "type": "local",
-            "command": [
-                "python3",
-                "scripts/libmcp_project_mcp.py"
-            ],
-            "enabled": true
-        }
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "libmcp-project": {
+      "type": "local",
+      "command": [
+        "python3",
+        "scripts/libmcp_project_mcp.py"
+      ],
+      "enabled": true
     }
+  }
 }

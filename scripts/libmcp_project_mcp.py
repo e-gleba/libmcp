@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Bootstrap an isolated environment and launch the project MCP server.
-
-The official MCP Python SDK requires Python 3.10+. This launcher keeps every
-dependency inside a per-user cache directory so the host Python's site-packages
-are never modified. The MCP stdio protocol requires stdout to stay clean, so all
-bootstrap output is captured and only failures are written to stderr.
-"""
+"""Bootstrap an isolated environment and launch the project MCP server."""
 
 from __future__ import annotations
 
@@ -17,6 +11,7 @@ from pathlib import Path
 APP_NAME = "libmcp-project-mcp"
 MCP_PIN = "mcp==1.12.4"
 MIN_PYTHON = (3, 10)
+BOOTSTRAP_TIMEOUT_SECONDS = 15 * 60
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SERVER_SCRIPT = SCRIPT_DIR / "project_mcp.py"
@@ -48,7 +43,18 @@ def _venv_python(venv: Path) -> Path:
 
 def _run_captured(command: list[str]) -> str:
     """Run a bootstrap command silently; return diagnostics only on failure."""
-    result = subprocess.run(command, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=BOOTSTRAP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return f"timed out after {BOOTSTRAP_TIMEOUT_SECONDS} seconds"
+    except OSError as error:
+        return str(error)
+
     if result.returncode == 0:
         return ""
     return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
@@ -58,8 +64,7 @@ def _ensure_environment() -> Path:
     """Create or reuse the isolated environment and return its interpreter."""
     if sys.version_info[:2] < MIN_PYTHON:
         _fail(
-            f"requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ "
-            f"(the official MCP SDK does not support older); "
+            f"requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+; "
             f"found {sys.version.split()[0]}"
         )
 
@@ -101,10 +106,15 @@ def main() -> None:
 
     python = _ensure_environment()
 
-    if "--install-only" in sys.argv[1:]:
+    if sys.argv[1:] == ["--install-only"]:
         return
+    if sys.argv[1:]:
+        _fail(f"unknown argument: {sys.argv[1]}")
 
-    completed = subprocess.run([str(python), str(SERVER_SCRIPT)])
+    try:
+        completed = subprocess.run([str(python), str(SERVER_SCRIPT)])
+    except OSError as error:
+        _fail(f"could not launch server: {error}")
     sys.exit(completed.returncode)
 
 
