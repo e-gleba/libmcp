@@ -143,7 +143,8 @@ file(REMOVE "${mcp_ts}.tmp")
 message(CHECK_PASS "done")
 
 message(CHECK_START "quicktype TS->C++ schema-only")
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+# Host check: cross Linux -> Windows must run the host's npm, not cmd.
+if(CMAKE_HOST_WIN32)
     execute_process(
         COMMAND
             cmd /c ${npm_executable} exec --yes -- quicktype --src-lang
@@ -317,7 +318,7 @@ file(
     [[#pragma once
 // generated from MCP schema @mcp_date@, do not edit
 // See https://modelcontextprotocol.io/docs/2026-07-28/getting-started/intro
-// See https://github.com/modelcontextprotocol/modelcontextprotocol/tree/main/schema
+// See https://github.com/modelcontextprotocol/inspector/blob/main/clients/cli/README.md
 #include <cstdint>
 #include <map>
 #include <string>

@@ -25,5 +25,5 @@ cpmaddpackage(
 # without this, ld.lld fails with R_386_PC32 / R_386_GOTOFF against
 # libjsoncpp.a when linking libexample_parse_schema.so.
 if(TARGET jsoncpp_static)
-  set_target_properties(jsoncpp_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set_target_properties(jsoncpp_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
