@@ -3,6 +3,26 @@
 C++23. C+CXX. CMake 4.3+. Ninja Multi-Config. CPM. doctest + CTest.
 Think first. Minimal diff. Verify with build + tests.
 
+## OpenCode discovery
+
+OpenCode automatically loads this file, root `opencode.json`, and relevant
+`.opencode/skills/*/SKILL.md` files when started anywhere inside this worktree.
+Do not ask the user to start or register the project MCP manually: OpenCode starts
+the enabled `libmcp-project` local server from `opencode.json`.
+
+The launcher self-bootstraps an isolated environment into the platform cache
+directory and never writes into the host Python's site-packages. Only stderr is
+used during bootstrap, so stdout stays clean for the MCP protocol.
+
+Before investigating or editing:
+
+1. Confirm `libmcp-project` tools are available.
+2. Read `project://instructions` and task-relevant resources when resource access is supported.
+3. Load the relevant project skill for CMake work or code review.
+4. Use direct file/CMake commands only if MCP startup fails; report the exact failure.
+
+OpenCode source of truth is root `opencode.json` plus `.opencode/skills/`.
+
 ## Build
 
 cmake --preset dev && cmake --build --preset dev -j && ctest --preset dev
