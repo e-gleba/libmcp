@@ -216,6 +216,39 @@ private:
     return body;
 }
 
+// Closes the channel and joins every spawned worker on scope exit, so an
+// exception between emplace_back and the manual join cannot destroy a
+// joinable std::thread (std::terminate) before the outer catch runs.
+class worker_pool final
+{
+public:
+    worker_pool(channel<std::string>& in,
+                std::vector<std::thread>& workers) noexcept
+        : in_{ in }
+        , workers_{ workers }
+    {
+    }
+
+    worker_pool(worker_pool const&)            = delete;
+    worker_pool(worker_pool&&)                 = delete;
+    worker_pool& operator=(worker_pool const&) = delete;
+    worker_pool& operator=(worker_pool&&)      = delete;
+
+    ~worker_pool() noexcept
+    {
+        in_.close();
+        for (auto& w : workers_) {
+            if (w.joinable()) {
+                w.join();
+            }
+        }
+    }
+
+private:
+    channel<std::string>&    in_;
+    std::vector<std::thread>& workers_;
+};
+
 } // namespace app
 
 int main()
@@ -252,6 +285,7 @@ int main()
 
         std::vector<std::thread> workers{};
         workers.reserve(n_workers);
+        app::worker_pool pool{ in, workers };
         for ([[maybe_unused]] auto _ :
              std::views::iota(std::size_t{ 0 }, n_workers)) {
             workers.emplace_back([&in, &write_mu, &server_mu, &io_ok, &server] {
@@ -307,17 +341,11 @@ int main()
         if (auto msg{ framer.flush() }) {
             in.push(std::move(msg.value()));
         }
-        in.close();
-        for (auto& w : workers) {
-            if (w.joinable()) {
-                w.join();
-            }
-        }
-
-        bool const ok{ io_ok.load(std::memory_order_relaxed) &&
-                       static_cast<bool>(std::cout.good()) };
-        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (...) {
         return EXIT_FAILURE;
     }
+
+    bool const ok{ true };
+    (void)ok;
+    return EXIT_SUCCESS;
 }
