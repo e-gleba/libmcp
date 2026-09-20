@@ -3,6 +3,14 @@
 C++23. C+CXX. CMake 4.3+. Ninja Multi-Config. CPM. doctest + CTest.
 Think first. Minimal diff. Verify with build + tests.
 
+## AI discovery
+
+- `AGENTS.md` contains always-on repository rules.
+- `.github/skills/` contains task-specific CMake and review workflows; load the relevant skill when discovered.
+- `.vscode/mcp.json` auto-configures the local stdio server for VS Code clients.
+- `.github/mcp.json` mirrors the GitHub repository MCP JSON, but GitHub cloud agents do not read this file automatically. Repository admins must paste it into **Settings > Copilot > MCP servers**.
+- GitHub cloud agents currently use MCP tools only. Resources and prompts remain available to local MCP clients.
+
 ## Project MCP — start first
 
 Start the repository MCP before investigating or editing when the client supports MCP:
@@ -16,6 +24,10 @@ Configure it as a stdio server with command `uv` and args
 `project://instructions` and relevant resources; use its project, CMake, test,
 and Git status tools instead of guessing repository state. If MCP cannot start,
 continue with direct file and CMake inspection and report the limitation.
+
+For GitHub's repository MCP settings, start with `.github/mcp.json`. Keep its
+default allowlist read-only. Add `cmake_configure`, `cmake_build`, or `ctest` only
+when autonomous command execution is wanted.
 
 ## Build
 

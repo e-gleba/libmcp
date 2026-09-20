@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "libmcp-project": {
+            "type": "stdio",
+            "command": "uv",
+            "args": [
+                "run",
+                "--project",
+                "scripts",
+                "libmcp-project-mcp"
+            ],
+            "tools": [
+                "project_tree",
+                "read_project_file",
+                "list_cmake_presets",
+                "git_status"
+            ]
+        }
+    }
+}

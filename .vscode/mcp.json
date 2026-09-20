@@ -1,0 +1,14 @@
+{
+    "servers": {
+        "libmcp-project": {
+            "type": "stdio",
+            "command": "uv",
+            "args": [
+                "run",
+                "--project",
+                "${workspaceFolder}/scripts",
+                "libmcp-project-mcp"
+            ]
+        }
+    }
+}
