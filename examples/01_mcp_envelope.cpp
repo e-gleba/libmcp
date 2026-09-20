@@ -20,6 +20,8 @@
 
 namespace app {
 
+// NDK libc++ (and old libstdc++): <stop_token>/<jthread> may be absent even
+// in C++20/23 mode. Close() unblocks pop(); workers poll closed_ instead.
 template <typename H>
 concept request_handler = requires(H& h, std::string const& s) {
     { h.handle_request(s) } -> std::convertible_to<std::string>;
@@ -96,12 +98,11 @@ public:
         cv_.notify_one();
     }
 
-    [[nodiscard]] bool pop(T& out, std::stop_token tok)
+    [[nodiscard]] bool pop(T& out)
     {
         std::unique_lock<std::mutex> lock{ mu_ };
-        bool const                   ok{ cv_.wait(
-            lock, tok, [this] { return closed_ || !queue_.empty(); }) };
-        if (!ok || queue_.empty()) {
+        cv_.wait(lock, [this] { return closed_ || !queue_.empty(); });
+        if (queue_.empty()) {
             return false;
         }
         out = std::move(queue_.front());
@@ -119,10 +120,10 @@ public:
     }
 
 private:
-    std::mutex                  mu_{};
-    std::condition_variable_any cv_{};
-    std::deque<T>               queue_{};
-    bool                        closed_{ false };
+    std::mutex              mu_{};
+    std::condition_variable cv_{};
+    std::deque<T>           queue_{};
+    bool                    closed_{ false };
 };
 
 class frame_assembler final
@@ -249,14 +250,13 @@ int main()
               static_cast<std::size_t>(
                   std::thread::hardware_concurrency()) }) };
 
-        std::vector<std::jthread> workers{};
+        std::vector<std::thread> workers{};
         workers.reserve(n_workers);
         for ([[maybe_unused]] auto _ :
              std::views::iota(std::size_t{ 0 }, n_workers)) {
-            workers.emplace_back([&in, &write_mu, &server_mu, &io_ok, &server](
-                                     std::stop_token tok) {
+            workers.emplace_back([&in, &write_mu, &server_mu, &io_ok, &server] {
                 std::string req{};
-                while (in.pop(req, tok)) {
+                while (in.pop(req)) {
                     std::string res{};
                     try {
                         std::lock_guard<std::mutex> slock{ server_mu };
@@ -308,6 +308,11 @@ int main()
             in.push(std::move(msg.value()));
         }
         in.close();
+        for (auto& w : workers) {
+            if (w.joinable()) {
+                w.join();
+            }
+        }
 
         bool const ok{ io_ok.load(std::memory_order_relaxed) &&
                        static_cast<bool>(std::cout.good()) };
