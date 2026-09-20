@@ -44,31 +44,247 @@ def validate_args(args: list[str]) -> None:
         raise ValueError("args must hold at most 32 items of 1..512 characters")
 
 
+def _mi(command: str) -> list[str]:
+    """Wrap one gdb MI command for batch execution via interpreter-exec."""
+    return ["-ex", f"interpreter-exec mi {command}"]
+
+
 def gdb_command(program: Path, args: list[str], breakpoints: list[str]) -> list[str]:
-    """Build a non-interactive gdb session capturing stack, locals, threads."""
+    """Build a non-interactive gdb session querying machine-readable records.
+
+    Breakpoints and run use the console interpreter; stack, arguments,
+    variables, and threads come back as MI records (^done with
+    bkpt/stack/threads/variables payloads) instead of scraped text.
+    """
     command = ["gdb", "--batch", "-ex", "set pagination off"]
     for point in breakpoints:
-        command.extend(["-ex", f"break {point}"])
-    command.extend(
-        [
-            "-ex",
-            "run",
-            "-ex",
-            "bt",
-            "-ex",
-            "info locals",
-            "-ex",
-            "info args",
-            "-ex",
-            "info threads",
-            "-ex",
-            "thread apply all bt full",
-            "--args",
-            str(program),
-            *args,
-        ]
-    )
+        command.extend(_mi(f'"-break-insert {point}"'))
+    command.append("-ex")
+    command.append("run")
+    command.extend(_mi('"-stack-list-frames"'))
+    command.extend(_mi('"-stack-list-arguments 1"'))
+    command.extend(_mi('"-stack-list-variables --frame 0 1"'))
+    command.extend(_mi('"-thread-info"'))
+    command.extend(["--args", str(program), *args])
     return command
+
+
+def _mi_value(text: str, pos: int) -> tuple[object, int]:
+    """Parse one MI value (string, tuple, or list); return (value, pos)."""
+    while pos < len(text) and text[pos] in " ,":
+        pos += 1
+    if pos >= len(text):
+        raise ValueError("truncated MI value")
+    char = text[pos]
+    if char == '"':
+        out: list[str] = []
+        pos += 1
+        while True:
+            if pos >= len(text):
+                raise ValueError("unterminated MI string")
+            char = text[pos]
+            if char == "\\":
+                nxt = text[pos + 1] if pos + 1 < len(text) else ""
+                out.append({"n": "\n", "t": "\t", "r": "\r"}.get(nxt, nxt))
+                pos += 2
+            elif char == '"':
+                return ("".join(out), pos + 1)
+            else:
+                out.append(char)
+                pos += 1
+    if char == "{":
+        obj: dict[str, object] = {}
+        pos += 1
+        while True:
+            while pos < len(text) and text[pos] in " ,":
+                pos += 1
+            if pos < len(text) and text[pos] == "}":
+                return (obj, pos + 1)
+            start = pos
+            while pos < len(text) and text[pos] not in "=,}":
+                pos += 1
+            key = text[start:pos]
+            if pos >= len(text) or text[pos] != "=":
+                raise ValueError(f"bad MI tuple near {key!r}")
+            value, pos = _mi_value(text, pos + 1)
+            obj[key] = value
+    if char == "[":
+        items: list[object] = []
+        pos += 1
+        while True:
+            while pos < len(text) and text[pos] in " ,":
+                pos += 1
+            if pos < len(text) and text[pos] == "]":
+                return (items, pos + 1)
+            probe = pos
+            while probe < len(text) and text[probe] not in '=,}]"':
+                probe += 1
+            key = text[pos:probe]
+            if (
+                probe < len(text)
+                and text[probe] == "="
+                and key
+                and all(part.isidentifier() for part in key.replace("-", "_").split())
+            ):
+                value, pos = _mi_value(text, probe + 1)
+                items.append({key: value})
+            else:
+                value, pos = _mi_value(text, pos)
+                items.append(value)
+    raise ValueError(f"bad MI value at {pos}: {text[pos:pos + 20]!r}")
+
+
+def _mi_record(line: str) -> tuple[str, dict[str, object]] | None:
+    """Parse one `^done,...` or `*stopped,...` line into (kind, fields)."""
+    for prefix, kind in (("^done,", "done"), ("*stopped,", "stopped")):
+        if line.startswith(prefix):
+            fields: dict[str, object] = {}
+            rest = line[len(prefix) :]
+            try:
+                while True:
+                    rest = rest.strip(" ,")
+                    if not rest:
+                        break
+                    match = re.match(r"([A-Za-z][\w-]*)=", rest)
+                    if not match:
+                        break
+                    value, end = _mi_value(rest, match.end())
+                    fields[match.group(1)] = value
+                    rest = rest[end:]
+            except ValueError:
+                return None
+            return (kind, fields)
+    return None
+
+
+def _mi_location(frame: object) -> str:
+    """Render one MI frame dict as `func at file:line [addr]`."""
+    if not isinstance(frame, dict):
+        return "??"
+    name = str(frame.get("func", "??"))
+    addr = f" [{frame['addr']}]" if frame.get("addr") else ""
+    file = frame.get("file")
+    line = frame.get("line")
+    if file and line:
+        return f"{name} at {Path(str(file)).name}:{line}{addr}"
+    return f"{name}{addr}"
+
+
+def _mi_bound(text: str, limit: int = 8000) -> str:
+    """Truncate one rendered section to keep tool responses bounded."""
+    if len(text) > limit:
+        text = text[:limit] + f"\n... truncated ({len(text) - limit} more characters)"
+    return text
+
+
+def _render_mi(output: str) -> str | None:
+    """Render gdb MI records as clean sections; None when nothing parsed."""
+    stops: list[dict[str, object]] = []
+    dones: list[dict[str, object]] = []
+    for line in output.splitlines():
+        parsed = _mi_record(line.strip())
+        if parsed is None:
+            continue
+        kind, fields = parsed
+        (stops if kind == "stopped" else dones).append(fields)
+    stacks: list[dict[str, object]] = []
+    record_stack = next((r.get("stack") for r in dones if "stack" in r), None)
+    if isinstance(record_stack, list):
+        for entry in record_stack:
+            if isinstance(entry, dict):
+                frame = entry.get("frame", entry)
+                if isinstance(frame, dict):
+                    stacks.append(frame)
+    threads: list[dict[str, object]] = []
+    for record in dones:
+        payload = record.get("threads")
+        if isinstance(payload, list):
+            threads = [entry for entry in payload if isinstance(entry, dict)]
+    variables: list[dict[str, object]] = []
+    for record in dones:
+        payload = record.get("variables")
+        if isinstance(payload, list):
+            variables = [entry for entry in payload if isinstance(entry, dict)]
+    arguments: dict[str, list[dict[str, object]]] = {}
+    for record in dones:
+        payload = record.get("stack-args")
+        if isinstance(payload, list):
+            for entry in payload:
+                if isinstance(entry, dict) and isinstance(entry.get("frame"), dict):
+                    frame = entry["frame"]
+                    arguments[str(frame.get("level", "?"))] = [
+                        item for item in frame.get("args", []) if isinstance(item, dict)
+                    ]
+    if not stacks and not threads:
+        return None
+    lines: list[str] = []
+    for record in dones:
+        point = record.get("bkpt")
+        if not isinstance(point, dict):
+            continue
+        lines.append(
+            f"breakpoint {point.get('number', '?')}: "
+            f"{point.get('func', '?')} at "
+            f"{Path(str(point.get('file', '?'))).name}:{point.get('line', '?')} "
+            f"[{point.get('addr', '?')}]"
+        )
+    current = next(
+        (
+            str(record.get("current-thread-id"))
+            for record in dones
+            if "current-thread-id" in record
+        ),
+        None,
+    )
+    if stops:
+        stop = stops[-1]
+        lines.append(
+            f"stop: {stop.get('reason', '?')} "
+            f"(thread {stop.get('thread-id', '?')}): "
+            f"{_mi_location(stop.get('frame'))}"
+        )
+    elif current is not None:
+        top = next(
+            (
+                entry.get("frame")
+                for entry in threads
+                if str(entry.get("id")) == current
+            ),
+            None,
+        )
+        state = next(
+            (
+                str(entry.get("state", "?"))
+                for entry in threads
+                if str(entry.get("id")) == current
+            ),
+            "?",
+        )
+        lines.append(f"stop: {state} (thread {current}): {_mi_location(top)}")
+    if threads:
+        lines.append("threads:")
+        for entry in threads:
+            marker = (
+                "*" if current is not None and str(entry.get("id")) == current else " "
+            )
+            lines.append(
+                f"{marker} [{entry.get('id', '?')}] {entry.get('name', '?')} "
+                f"({entry.get('state', '?')}): {_mi_location(entry.get('frame'))}"
+            )
+    if stacks:
+        lines.append(f"frames (thread {current or '?'}):")
+        for entry in stacks:
+            level = str(entry.get("level", "?"))
+            lines.append(f"#{level} {_mi_location(entry)}")
+            for item in arguments.get(level, []):
+                lines.append(
+                    f"    arg {item.get('name', '?')} = {item.get('value', '?')}"
+                )
+    if variables:
+        lines.append("locals (frame #0):")
+        for item in variables:
+            lines.append(f"{item.get('name', '?')} = {item.get('value', '?')}")
+    return _mi_bound("\n".join(lines))
 
 
 def lldb_command(program: Path, args: list[str], breakpoints: list[str]) -> list[str]:
@@ -179,4 +395,8 @@ def run_program(
         f"exit_code: {result.returncode}\nprogram: {program_label}"
         f"\ndebugger: {selected}\nbreakpoints: {breakpoint_label}"
     )
-    return f"{header}\n{output}".rstrip()
+    if selected == "gdb":
+        body = _render_mi(output) or output
+    else:
+        body = output
+    return f"{header}\n{body}".rstrip()
