@@ -42,8 +42,12 @@ function(mcp_example name src)
         "example_${name}" PROPERTIES MSVC_RUNTIME_LIBRARY
                                      "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-    target_link_options("example_${name}" PRIVATE
-                        "$<$<CXX_COMPILER_FRONTEND_VARIANT:GNU>:-static>")
+    # Static GNU link everywhere except Android: -static on a shared Bionic
+    # link breaks on LIBC_N-versioned compiler-rt symbols (__aeabi_*).
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
+        target_link_options("example_${name}" PRIVATE
+                            "$<$<CXX_COMPILER_FRONTEND_VARIANT:GNU>:-static>")
+    endif()
 endfunction()
 
 mcp_example(parse_schema 01_mcp_envelope.cpp)

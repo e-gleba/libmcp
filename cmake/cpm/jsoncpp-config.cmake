@@ -15,4 +15,8 @@ cpmaddpackage(
     "BUILD_SHARED_LIBS OFF"
     "BUILD_STATIC_LIBS ON"
     "BUILD_OBJECT_LIBS OFF"
+    # MSVC: match the project's static CRT (MultiThreaded[$Debug]).
+    # Without this jsoncpp defaults to the dynamic CRT and every consumer
+    # fails with LNK2038 RuntimeLibrary MD_DynamicRelease vs MT_StaticRelease.
+    "JSONCPP_STATIC_WINDOWS_RUNTIME ON"
 )
