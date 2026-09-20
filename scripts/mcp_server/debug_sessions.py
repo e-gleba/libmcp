@@ -526,6 +526,69 @@ def evaluate(session_id: str, expression: str, frame: int = 0) -> str:
     return "\n".join(lines)
 
 
+_MAX_COMMAND_CHARS = 512
+_MAX_COMMAND_OUTPUT = 8000
+# Verbs owned by session tools (debug_run/continue/break/stop) or able to
+# escape the session (shell, script, quit, retargeting). Everything else,
+# including help, disassemble, register, memory, thread, and expression,
+# is available for manual calls.
+_BLOCKED_VERBS = frozenset(
+    {
+        "run",
+        "r",
+        "continue",
+        "c",
+        "kill",
+        "detach",
+        "attach",
+        "process",
+        "platform",
+        "script",
+        "command",
+        "breakpoint",
+        "br",
+        "b",
+        "quit",
+        "q",
+        "exit",
+        "target",
+        "gui",
+    }
+)
+
+
+def command(
+    session_id: str, command_text: str, timeout: int = DEBUG_TIMEOUT_SECONDS
+) -> str:
+    """Run one raw lldb command in a session; `help` lists commands."""
+    if not command_text or len(command_text) > _MAX_COMMAND_CHARS:
+        raise ValueError(f"command must hold 1..{_MAX_COMMAND_CHARS} characters")
+    verb = command_text.strip().split(None, 1)[0].lower()
+    if verb in _BLOCKED_VERBS:
+        raise ValueError(
+            f"Command {verb!r} is owned by a session tool "
+            "(debug_run/continue/break/stop) or would escape the session."
+        )
+    item = _get(session_id)
+    lldb = _lldb()
+    interpreter = item.debugger.GetCommandInterpreter()
+
+    def action() -> tuple[bool, str]:
+        result = lldb.SBCommandReturnObject()
+        interpreter.HandleCommand(command_text, result)
+        text = ((result.GetOutput() or "") + (result.GetError() or "")).strip()
+        return (bool(result.Succeeded()), text or "(no output)")
+
+    succeeded, text = _blocking(item, action, timeout)
+    if len(text) > _MAX_COMMAND_OUTPUT:
+        text = (
+            text[:_MAX_COMMAND_OUTPUT]
+            + f"\n... truncated ({len(text) - _MAX_COMMAND_OUTPUT} more characters)"
+        )
+    status = "success" if succeeded else "failure"
+    return f"session: {session_id}\ncommand: {command_text}\nstatus: {status}\n{text}"
+
+
 def stop(session_id: str) -> str:
     """Kill the inferior, destroy the debugger, forget the session."""
     with _SESSIONS_LOCK:

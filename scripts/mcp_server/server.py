@@ -447,6 +447,19 @@ def debug_vars(
 
 
 @mcp.tool()
+def debug_command(
+    session: Annotated[str, Field(description="Session id from debug_start")],
+    command: Annotated[
+        str,
+        Field(description="Raw lldb command; `help` lists commands", max_length=512),
+    ],
+    timeout_seconds: Annotated[int, Field(ge=5, le=600)] = DEBUG_TIMEOUT_SECONDS,
+) -> str:
+    """Run one raw lldb command in a session (disassemble, registers, help)."""
+    return debug_sessions.command(session, command, timeout_seconds)
+
+
+@mcp.tool()
 def debug_stop(
     session: Annotated[str, Field(description="Session id from debug_start")],
 ) -> str:
@@ -537,7 +550,10 @@ Stop after step 4 if the program exits cleanly and summarize the clean run.
 
 For long interactive sessions instead: debug_start, debug_break, debug_run,
 then debug_step (over/into/out), debug_where, debug_vars, debug_continue,
-debug_stop. One session stays alive across calls until debug_stop."""
+debug_stop. One session stays alive across calls until debug_stop.
+For manual control inside a session: debug_command with any raw lldb
+command (`help` lists them; disassemble, register, memory, thread);
+process control and shell escapes stay with the session tools."""
 
 
 def main() -> None:
