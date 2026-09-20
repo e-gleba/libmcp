@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP server exposing repository context and safe project commands."""
+"""OpenCode project MCP for bounded repository, build, and debugger operations."""
 
 from __future__ import annotations
 
@@ -13,20 +13,20 @@ from pydantic import Field
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_FILE_BYTES = 256 * 1024
+MAX_OUTPUT_BYTES = 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 15 * 60
 
 mcp = FastMCP(
     "libmcp-project",
     instructions=(
-        "Use resources for project context before editing. Use tools for CMake "
-        "discovery, configure, build, test, and debugging. All paths stay inside "
-        "the repository."
+        "Read project context before editing. Use bounded project, CMake, test, "
+        "and debugger tools. All file paths remain inside the repository."
     ),
 )
 
 
 def _inside_root(path: str) -> Path:
-    """Resolve a repository-relative path and reject traversal outside the root."""
+    """Resolve repository-relative path and reject traversal or symlink escape."""
     candidate = (ROOT / path).resolve()
     if candidate != ROOT and ROOT not in candidate.parents:
         raise ValueError(f"Path escapes repository: {path}")
@@ -34,7 +34,7 @@ def _inside_root(path: str) -> Path:
 
 
 def _read_text(path: str) -> str:
-    """Read a bounded UTF-8 file from inside the repository."""
+    """Read bounded UTF-8 file from repository."""
     candidate = _inside_root(path)
     if not candidate.is_file():
         raise ValueError(f"Not a file: {path}")
@@ -44,21 +44,25 @@ def _read_text(path: str) -> str:
 
 
 def _decode_output(output: str | bytes | None) -> str:
-    """Normalize subprocess output across normal and timeout paths."""
+    """Normalize subprocess output and bound response size."""
     if isinstance(output, bytes):
-        return output.decode("utf-8", errors="replace").rstrip()
-    return (output or "").rstrip()
+        text = output.decode("utf-8", errors="replace")
+    else:
+        text = output or ""
+    encoded = text.rstrip().encode("utf-8")
+    if len(encoded) <= MAX_OUTPUT_BYTES:
+        return encoded.decode("utf-8")
+    return encoded[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace") + "\n[output truncated]"
 
 
 def _run(command: list[str]) -> str:
-    """Run a fixed command without a shell and return bounded-time diagnostics."""
+    """Run fixed executable without shell; return bounded diagnostics."""
     try:
         result = subprocess.run(
             command,
             cwd=ROOT,
             check=False,
             capture_output=True,
-            text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as error:
@@ -97,11 +101,11 @@ def instructions() -> str:
 @mcp.resource(
     "project://readme",
     title="Project README",
-    description="Project overview, supported platforms, and build examples.",
+    description="Project overview, platforms, and build examples.",
     mime_type="text/markdown",
 )
 def readme() -> str:
-    """Return the project README."""
+    """Return project README."""
     return _read_text("readme.md")
 
 
@@ -112,7 +116,7 @@ def readme() -> str:
     mime_type="application/json",
 )
 def cmake_presets() -> str:
-    """Return the top-level CMake presets file."""
+    """Return top-level CMake presets."""
     return _read_text("CMakePresets.json")
 
 
@@ -121,7 +125,7 @@ def project_tree(
     path: Annotated[str, Field(description="Repository-relative directory")] = ".",
     depth: Annotated[int, Field(ge=0, le=5)] = 2,
 ) -> str:
-    """List project files without reading their contents."""
+    """List project files without reading contents."""
     start = _inside_root(path)
     if not start.is_dir():
         raise ValueError(f"Not a directory: {path}")
@@ -143,19 +147,19 @@ def project_tree(
 def read_project_file(
     path: Annotated[str, Field(description="Repository-relative UTF-8 file")],
 ) -> str:
-    """Read a bounded UTF-8 file from inside the repository."""
+    """Read bounded UTF-8 project file."""
     return _read_text(path)
 
 
 @mcp.tool()
 def git_status() -> str:
-    """Return machine-readable repository status without changing files."""
+    """Return machine-readable repository status without mutation."""
     return _run(["git", "status", "--short", "--branch"])
 
 
 @mcp.tool()
 def list_cmake_presets() -> str:
-    """Ask CMake for configure, build, test, package, and workflow presets."""
+    """List configure, build, test, package, and workflow presets."""
     return _run(["cmake", "--list-presets=all"])
 
 
@@ -164,7 +168,7 @@ def cmake_configure(
     preset: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.+-]+$")],
     fresh: bool = False,
 ) -> str:
-    """Configure one declared CMake preset."""
+    """Configure declared CMake preset."""
     command = ["cmake", "--preset", preset]
     if fresh:
         command.append("--fresh")
@@ -178,7 +182,7 @@ def cmake_build(
         str | None, Field(pattern=r"^[A-Za-z0-9_.+:/-]+$")
     ] = None,
 ) -> str:
-    """Build one declared CMake build preset and optional target."""
+    """Build declared CMake preset and optional target."""
     command = ["cmake", "--build", "--preset", preset]
     if target:
         command.extend(["--target", target])
@@ -189,19 +193,19 @@ def cmake_build(
 def ctest(
     preset: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.+-]+$")],
 ) -> str:
-    """Run one declared CTest preset with failure output enabled."""
+    """Run declared CTest preset with failure output."""
     return _run(["ctest", "--preset", preset, "--output-on-failure"])
 
 
 @mcp.tool()
 def available_debuggers() -> str:
-    """List supported debuggers installed on this host."""
-    lines: list[str] = []
-    for name in ("gdb", "lldb", "cdb"):
-        path = shutil.which(name)
-        if path:
-            lines.append(f"{name}: {path}")
-    return "\n".join(lines) if lines else "No supported debugger found."
+    """List supported debuggers installed on host."""
+    installed = [
+        f"{name}: {path}"
+        for name in ("gdb", "lldb", "cdb")
+        if (path := shutil.which(name))
+    ]
+    return "\n".join(installed) if installed else "No supported debugger found."
 
 
 @mcp.tool()
@@ -209,7 +213,7 @@ def debug_executable(
     executable: Annotated[str, Field(description="Repository-relative executable")],
     debugger: Literal["auto", "gdb", "lldb", "cdb"] = "auto",
 ) -> str:
-    """Run an executable under an installed debugger in non-interactive mode."""
+    """Run repository executable under installed non-interactive debugger."""
     program = _inside_root(executable)
     if not program.is_file():
         raise ValueError(f"Not a file: {executable}")
@@ -220,9 +224,27 @@ def debug_executable(
         raise ValueError(f"Debugger not installed: {debugger}")
 
     if selected == "gdb":
-        command = ["gdb", "--batch", "-ex", "run", "-ex", "thread apply all bt", "--args", str(program)]
+        command = [
+            "gdb",
+            "--batch",
+            "-ex",
+            "run",
+            "-ex",
+            "thread apply all bt",
+            "--args",
+            str(program),
+        ]
     elif selected == "lldb":
-        command = ["lldb", "--batch", "-o", "run", "-o", "thread backtrace all", "--", str(program)]
+        command = [
+            "lldb",
+            "--batch",
+            "-o",
+            "run",
+            "-o",
+            "thread backtrace all",
+            "--",
+            str(program),
+        ]
     else:
         command = ["cdb", "-c", "g;~*k;q", str(program)]
     return _run(command)
@@ -231,45 +253,41 @@ def debug_executable(
 @mcp.prompt()
 def inspect_project(task: str) -> str:
     """Gather project context before planning or editing."""
-    return f"""You are working on this repository.
+    return f"""Task: {task}
 
-Task: {task}
-
-Before proposing changes:
+Before changes:
 1. Read project://instructions and project://readme.
-2. Read project://cmake-presets when the task touches builds, tests, packaging, or CI.
-3. Call project_tree only for directories relevant to the task.
-4. Read the exact files you intend to change.
-5. State assumptions, a minimal plan, and verification commands.
+2. Read project://cmake-presets for build, test, packaging, or CI work.
+3. Inspect only task-relevant directories and exact files.
+4. State assumptions, minimal plan, and verification commands.
 Do not edit unrelated files."""
 
 
 @mcp.prompt()
 def fix_cmake(task: str, preset: str = "dev") -> str:
-    """Investigate a CMake failure using repository conventions."""
-    return f"""Fix this CMake problem with a surgical diff:
+    """Investigate CMake failure using project conventions."""
+    return f"""Fix this CMake problem with surgical changes:
 
 {task}
 
-Use preset: {preset}
+Preset: {preset}
 
-Read project://instructions and project://cmake-presets first. Inspect relevant
-CMake files, reproduce the failure, fix only its cause, then configure, build,
-and run tests using declared presets. Report commands and exit codes."""
+Read project instructions and presets. Reproduce failure, fix its cause, then
+configure, build, and test with declared presets. Report commands and exit codes."""
 
 
 @mcp.prompt()
 def review_change(scope: Literal["working-tree", "staged"] = "working-tree") -> str:
-    """Review a local change against project rules."""
-    return f"""Review the {scope} changes. Read project://instructions first.
-Check correctness, cross-platform CMake behavior, tests, accidental scope growth,
-and generated/build artifacts. Report actionable findings by severity with file
-and line references. If no findings exist, say so and list verification gaps."""
+    """Review local change against project rules."""
+    return f"""Review {scope} changes after reading project://instructions.
+Check correctness, lifetimes, undefined behavior, portability, CMake behavior,
+tests, scope growth, and generated artifacts. Report actionable findings with
+severity and file/line references. State verification gaps if no findings."""
 
 
 def main() -> None:
-    """Run the MCP server over stdio."""
-    mcp.run()
+    """Run MCP stdio transport explicitly."""
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

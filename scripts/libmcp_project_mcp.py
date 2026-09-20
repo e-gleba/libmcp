@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
-"""Bootstrap an isolated environment and launch the project MCP server."""
+"""Launch project MCP with an isolated, reproducible Python environment."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 APP_NAME = "libmcp-project-mcp"
-MCP_PIN = "mcp==1.12.4"
+MCP_REQUIREMENT = "mcp==1.12.4"
 MIN_PYTHON = (3, 10)
 BOOTSTRAP_TIMEOUT_SECONDS = 15 * 60
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SERVER_SCRIPT = SCRIPT_DIR / "project_mcp.py"
+CACHE_KEY = hashlib.sha256(MCP_REQUIREMENT.encode()).hexdigest()[:12]
 
 
 def _fail(message: str) -> None:
-    """Write a fatal error to stderr and exit, keeping stdout clean for MCP."""
+    """Exit with actionable stderr while preserving MCP stdout."""
     print(f"{APP_NAME}: {message}", file=sys.stderr)
-    sys.exit(1)
+    raise SystemExit(1)
 
 
 def _cache_root() -> Path:
-    """Return the platform cache directory without third-party helpers."""
+    """Return platform cache directory without third-party dependencies."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA")
         return (Path(base) if base else Path.home() / "AppData" / "Local") / "Cache"
@@ -35,14 +37,14 @@ def _cache_root() -> Path:
 
 
 def _venv_python(venv: Path) -> Path:
-    """Return the interpreter path for an isolated virtual environment."""
+    """Return virtual-environment interpreter path."""
     if sys.platform == "win32":
         return venv / "Scripts" / "python.exe"
     return venv / "bin" / "python"
 
 
-def _run_captured(command: list[str]) -> str:
-    """Run a bootstrap command silently; return diagnostics only on failure."""
+def _run_bootstrap(command: list[str]) -> str | None:
+    """Run bootstrap command; return diagnostic on failure."""
     try:
         result = subprocess.run(
             command,
@@ -56,66 +58,66 @@ def _run_captured(command: list[str]) -> str:
         return str(error)
 
     if result.returncode == 0:
-        return ""
+        return None
     return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
 
 
 def _ensure_environment() -> Path:
-    """Create or reuse the isolated environment and return its interpreter."""
+    """Create or reuse versioned environment and return its interpreter."""
     if sys.version_info[:2] < MIN_PYTHON:
         _fail(
-            f"requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+; "
+            f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ required; "
             f"found {sys.version.split()[0]}"
         )
 
-    env_root = _cache_root() / APP_NAME
-    venv = env_root / "venv"
+    venv = _cache_root() / APP_NAME / CACHE_KEY
     python = _venv_python(venv)
-    stamp = env_root / "requirements.stamp"
+    if python.is_file():
+        return python
 
-    env_root.mkdir(parents=True, exist_ok=True)
+    error = _run_bootstrap([sys.executable, "-m", "venv", str(venv)])
+    if error:
+        _fail(f"could not create isolated environment: {error}")
 
-    if not python.is_file():
-        error = _run_captured([sys.executable, "-m", "venv", str(venv)])
-        if error:
-            _fail(f"could not create isolated environment: {error}")
-
-    if not stamp.is_file() or stamp.read_text(encoding="utf-8").strip() != MCP_PIN:
-        error = _run_captured(
-            [
-                str(python),
-                "-m",
-                "pip",
-                "install",
-                "--quiet",
-                "--disable-pip-version-check",
-                MCP_PIN,
-            ]
-        )
-        if error:
-            _fail(f"could not install the MCP SDK: {error}")
-        stamp.write_text(MCP_PIN + "\n", encoding="utf-8")
-
+    error = _run_bootstrap(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--disable-pip-version-check",
+            MCP_REQUIREMENT,
+        ]
+    )
+    if error:
+        _fail(f"could not install {MCP_REQUIREMENT}: {error}")
     return python
 
 
+def _check_server(python: Path) -> None:
+    """Import server in isolated environment before OpenCode starts stdio."""
+    error = _run_bootstrap([str(python), "-m", "py_compile", str(SERVER_SCRIPT)])
+    if error:
+        _fail(f"server validation failed: {error}")
+
+
 def main() -> None:
-    """Ensure the isolated environment, then run the server over stdio."""
+    """Validate environment, then replace launcher process with MCP server."""
     if not SERVER_SCRIPT.is_file():
-        _fail(f"missing server script {SERVER_SCRIPT}")
-
-    python = _ensure_environment()
-
-    if sys.argv[1:] == ["--install-only"]:
-        return
-    if sys.argv[1:]:
+        _fail(f"missing server script: {SERVER_SCRIPT}")
+    if sys.argv[1:] not in ([], ["--install-only"]):
         _fail(f"unknown argument: {sys.argv[1]}")
 
+    python = _ensure_environment()
+    _check_server(python)
+    if sys.argv[1:] == ["--install-only"]:
+        return
+
     try:
-        completed = subprocess.run([str(python), str(SERVER_SCRIPT)])
+        os.execv(str(python), [str(python), "-u", str(SERVER_SCRIPT)])
     except OSError as error:
-        _fail(f"could not launch server: {error}")
-    sys.exit(completed.returncode)
+        _fail(f"could not launch MCP server: {error}")
 
 
 if __name__ == "__main__":
