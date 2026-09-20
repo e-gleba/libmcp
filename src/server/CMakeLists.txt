@@ -59,17 +59,16 @@ target_include_directories(
 option(MCP_HANDLER_USE_JSONCPP "Use jsoncpp backend instead of nlohmann_json"
        ON)
 
-# PRIVATE links never enter the install interface, so install(EXPORT) needs
-# no export set for these deps. Keep plain target names: wrapping them in
-# $<BUILD_INTERFACE:...> breaks usage-requirement (include dir) propagation
-# on some generators — observed as missing jsoncpp headers on LLVM MinGW.
+# Build-only deps: BUILD_INTERFACE keeps headers/flags for this build while
+# stripping every usage requirement from the install interface, so
+# install(EXPORT) never demands an export set and nothing leaks to consumers.
 target_link_libraries(
     mcp_handler
     PRIVATE
-        mcp::schema
-        warnings
-        $<$<BOOL:${MCP_HANDLER_USE_JSONCPP}>:jsoncpp_static>
-        $<$<NOT:$<BOOL:${MCP_HANDLER_USE_JSONCPP}>>:nlohmann_json::nlohmann_json>
+        $<BUILD_INTERFACE:mcp::schema>
+        $<BUILD_INTERFACE:warnings>
+        $<$<BOOL:${MCP_HANDLER_USE_JSONCPP}>:$<BUILD_INTERFACE:jsoncpp_static>>
+        $<$<NOT:$<BOOL:${MCP_HANDLER_USE_JSONCPP}>>:$<BUILD_INTERFACE:nlohmann_json::nlohmann_json>>
 )
 
 if(MCP_HANDLER_USE_JSONCPP)
@@ -84,6 +83,18 @@ else()
         PROPERTIES HEADER_FILE_ONLY FALSE)
     set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/detail/jsoncpp.cpp
                                 PROPERTIES HEADER_FILE_ONLY TRUE)
+endif()
+
+# MinGW cross: jsoncpp_static's usage include dir does not propagate through
+# the BUILD_INTERFACE-wrapped link on this generator (observed as missing
+# jsoncpp/json/json.h). PRIVATE here, not PUBLIC: consumers never see it,
+# install(EXPORT) stays clean, and only this TU's compile gets the -I.
+if(MCP_HANDLER_USE_JSONCPP)
+    get_target_property(ct_jsoncpp_inc jsoncpp_static
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(ct_jsoncpp_inc)
+        target_include_directories(mcp_handler PRIVATE ${ct_jsoncpp_inc})
+    endif()
 endif()
 
 target_link_options(
