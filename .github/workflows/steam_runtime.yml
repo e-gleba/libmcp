@@ -44,6 +44,7 @@ on:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/*.md"
       - ".coderabbit.yaml"
+      - ".coderabbit.yml"
       - ".cursor/**"
       - ".cursorignore"
       - ".editorconfig"
@@ -108,19 +109,19 @@ jobs:
         run: cmake --workflow --preset linux_steamrt4_x86_64_release_package
       - name: ABI gate — symbol versions vs runtime libraries
         run: cmake "-DTARGETS=build/linux_steamrt4_x86_64/src;build/linux_steamrt4_x86_64/tests;build/linux_steamrt4_x86_64/_deps/sdl3-build" -P cmake/steampipe/check_elf_abi.cmake
-      # Stage what the platform smoke test needs: the shipped binaries
-      # plus libSDL3. Target paths come from cmake --build (Ninja
-      # Multi-Config places Release outputs under <target>/Release/),
-      # resolved with find so a renamed example/src layout cannot break
-      # staging again. cp -L collapses the .so symlink chain — artifacts
-      # do not preserve symlinks.
+      # Stage what the platform smoke test needs: the shipped example plus
+      # the test binary plus libSDL3. Target output names come from
+      # examples/CMakeLists.txt (example_<name>) and tests/, resolved with
+      # find so a renamed src layout cannot break staging again.
+      # cp -L collapses the .so symlink chain — artifacts do not preserve
+      # symlinks.
       - name: Stage binaries for the platform smoke test
         shell: bash
         run: |
           b=build/linux_steamrt4_x86_64
           s=${RUNNER_TEMP}/steam_binaries
           mkdir -p "${s}/bin" "${s}/lib"
-          for t in 05_webassembly 07_piped_mcp tests; do
+          for t in example_parse_schema tests; do
             f=$(find "${b}" -path "*/Release/${t}" -type f -print -quit)
             test -n "${f}" || { echo "::error::${t} not found under ${b}"; exit 1; }
             cp "${f}" "${s}/bin/"
@@ -170,17 +171,8 @@ jobs:
       # --list prints which runtime path every NEEDED library is taken
       # from, and any "not found" fails the job. LD_LIBRARY_PATH provides
       # the staged libSDL3 (the build-tree RPATH is meaningless here).
-      # 02_sdl3_app needs a display to execute but only the loader to
-      # validate — this gate covers it.
       - name: Library resolution gate on the real runtime
         run: cmake "-DROOT=${{ github.workspace }}/steam_binaries" -P cmake/steampipe/check_steamrt_loader.cmake
-      - name: Smoke test — hello world on the real runtime
-        run: >-
-          docker run --rm --entrypoint ""
-          -e LD_DEBUG=libs
-          -v "${{ github.workspace }}/steam_binaries:/opt/app:ro"
-          "$STEAMRT4_PLATFORM_IMAGE"
-          /opt/app/bin/05_webassembly
       - name: Smoke test — full test suite on the real runtime
         run: >-
           docker run --rm --entrypoint ""
