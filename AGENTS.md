@@ -17,8 +17,7 @@ Before investigating or editing:
 3. Load the relevant project skill for CMake work or code review.
 4. Use direct file/CMake commands only if MCP startup fails; report the exact failure.
 
-`.vscode/mcp.json` and `.github/mcp.json` are compatibility configs for other
-clients. OpenCode source of truth is root `opencode.json` plus `.opencode/skills/`.
+OpenCode source of truth is root `opencode.json` plus `.opencode/skills/`.
 
 ## Build
 
