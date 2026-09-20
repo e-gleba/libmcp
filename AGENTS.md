@@ -3,6 +3,20 @@
 C++23. C+CXX. CMake 4.3+. Ninja Multi-Config. CPM. doctest + CTest.
 Think first. Minimal diff. Verify with build + tests.
 
+## Project MCP — start first
+
+Start the repository MCP before investigating or editing when the client supports MCP:
+
+```bash
+uv run --project scripts libmcp-project-mcp
+```
+
+Configure it as a stdio server with command `uv` and args
+`run --project scripts libmcp-project-mcp`. Then read
+`project://instructions` and relevant resources; use its project, CMake, test,
+and Git status tools instead of guessing repository state. If MCP cannot start,
+continue with direct file and CMake inspection and report the limitation.
+
 ## Build
 
 cmake --preset dev && cmake --build --preset dev -j && ctest --preset dev
