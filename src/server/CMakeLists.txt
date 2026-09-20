@@ -59,13 +59,17 @@ target_include_directories(
 option(MCP_HANDLER_USE_JSONCPP "Use jsoncpp backend instead of nlohmann_json"
        ON)
 
+# PRIVATE links never enter the install interface, so install(EXPORT) needs
+# no export set for these deps. Keep plain target names: wrapping them in
+# $<BUILD_INTERFACE:...> breaks usage-requirement (include dir) propagation
+# on some generators — observed as missing jsoncpp headers on LLVM MinGW.
 target_link_libraries(
     mcp_handler
     PRIVATE
-        $<BUILD_INTERFACE:mcp::schema>
-        $<BUILD_INTERFACE:warnings>
-        $<$<BOOL:${MCP_HANDLER_USE_JSONCPP}>:$<BUILD_INTERFACE:jsoncpp_static>>
-        $<$<NOT:$<BOOL:${MCP_HANDLER_USE_JSONCPP}>>:$<BUILD_INTERFACE:nlohmann_json::nlohmann_json>>
+        mcp::schema
+        warnings
+        $<$<BOOL:${MCP_HANDLER_USE_JSONCPP}>:jsoncpp_static>
+        $<$<NOT:$<BOOL:${MCP_HANDLER_USE_JSONCPP}>>:nlohmann_json::nlohmann_json>
 )
 
 if(MCP_HANDLER_USE_JSONCPP)
