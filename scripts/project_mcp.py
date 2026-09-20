@@ -3,18 +3,18 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 from typing import Annotated, Literal
 
-from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_FILE_BYTES = 256 * 1024
+COMMAND_TIMEOUT_SECONDS = 15 * 60
 
-mcp = MCPServer(
+mcp = FastMCP(
     "libmcp-project",
     instructions=(
         "Use resources for project context before editing. Use tools for CMake "
@@ -24,6 +24,7 @@ mcp = MCPServer(
 
 
 def _inside_root(path: str) -> Path:
+    """Resolve a repository-relative path and reject traversal outside the root."""
     candidate = (ROOT / path).resolve()
     if candidate != ROOT and ROOT not in candidate.parents:
         raise ValueError(f"Path escapes repository: {path}")
@@ -31,6 +32,7 @@ def _inside_root(path: str) -> Path:
 
 
 def _read_text(path: str) -> str:
+    """Read a bounded UTF-8 file from inside the repository."""
     candidate = _inside_root(path)
     if not candidate.is_file():
         raise ValueError(f"Not a file: {path}")
@@ -40,13 +42,27 @@ def _read_text(path: str) -> str:
 
 
 def _run(command: list[str]) -> str:
-    result = subprocess.run(
-        command,
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    """Run a fixed command without a shell and return bounded-time diagnostics."""
+    try:
+        result = subprocess.run(  # noqa: S603 - argv uses fixed executables and validated args.
+            command,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        output = "\n".join(
+            part.rstrip()
+            for part in (error.stdout or "", error.stderr or "")
+            if part
+        )
+        return (
+            f"exit_code: timeout\ncommand exceeded {COMMAND_TIMEOUT_SECONDS} seconds"
+            f"{f'\n{output}' if output else ''}"
+        )
+
     output = "\n".join(
         part for part in (result.stdout.rstrip(), result.stderr.rstrip()) if part
     )
@@ -60,6 +76,7 @@ def _run(command: list[str]) -> str:
     mime_type="text/markdown",
 )
 def instructions() -> str:
+    """Return repository agent instructions."""
     return _read_text("AGENTS.md")
 
 
@@ -70,6 +87,7 @@ def instructions() -> str:
     mime_type="text/markdown",
 )
 def readme() -> str:
+    """Return the project README."""
     return _read_text("readme.md")
 
 
@@ -80,6 +98,7 @@ def readme() -> str:
     mime_type="application/json",
 )
 def cmake_presets() -> str:
+    """Return the top-level CMake presets file."""
     return _read_text("CMakePresets.json")
 
 
@@ -90,6 +109,7 @@ def cmake_presets() -> str:
     mime_type="text/plain",
 )
 def project_file(path: str) -> str:
+    """Return a bounded repository file."""
     return _read_text(path)
 
 
@@ -210,6 +230,7 @@ and line references. If no findings exist, say so and list verification gaps."""
 
 
 def main() -> None:
+    """Run the MCP server over stdio."""
     mcp.run()
 
 
