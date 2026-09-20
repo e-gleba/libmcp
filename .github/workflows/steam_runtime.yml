@@ -108,17 +108,23 @@ jobs:
         run: cmake --workflow --preset linux_steamrt4_x86_64_release_package
       - name: ABI gate — symbol versions vs runtime libraries
         run: cmake "-DTARGETS=build/linux_steamrt4_x86_64/src;build/linux_steamrt4_x86_64/tests;build/linux_steamrt4_x86_64/_deps/sdl3-build" -P cmake/steampipe/check_elf_abi.cmake
-      # Stage what the platform smoke test needs: the shipped executables
-      # plus libSDL3 (cp -L collapses the .so symlink chain — artifacts do
-      # not preserve symlinks).
+      # Stage what the platform smoke test needs: the shipped binaries
+      # plus libSDL3. Target paths come from cmake --build (Ninja
+      # Multi-Config places Release outputs under <target>/Release/),
+      # resolved with find so a renamed example/src layout cannot break
+      # staging again. cp -L collapses the .so symlink chain — artifacts
+      # do not preserve symlinks.
       - name: Stage binaries for the platform smoke test
+        shell: bash
         run: |
           b=build/linux_steamrt4_x86_64
           s=${RUNNER_TEMP}/steam_binaries
           mkdir -p "${s}/bin" "${s}/lib"
-          cp "${b}/src/01_hello_world/Release/01_hello_world" "${s}/bin/"
-          cp "${b}/src/02_sdl3_app/Release/02_sdl3_app" "${s}/bin/"
-          cp "${b}/tests/Release/tests" "${s}/bin/"
+          for t in 05_webassembly 07_piped_mcp tests; do
+            f=$(find "${b}" -path "*/Release/${t}" -type f -print -quit)
+            test -n "${f}" || { echo "::error::${t} not found under ${b}"; exit 1; }
+            cp "${f}" "${s}/bin/"
+          done
           sdl_soname=$(find "${b}/_deps/sdl3-build" -name 'libSDL3.so.0' -print -quit)
           test -n "${sdl_soname}" || { echo "::error::libSDL3.so.0 not found under ${b}/_deps/sdl3-build"; exit 1; }
           cp -L "${sdl_soname}" "${s}/lib/libSDL3.so.0"
@@ -174,7 +180,7 @@ jobs:
           -e LD_DEBUG=libs
           -v "${{ github.workspace }}/steam_binaries:/opt/app:ro"
           "$STEAMRT4_PLATFORM_IMAGE"
-          /opt/app/bin/01_hello_world
+          /opt/app/bin/05_webassembly
       - name: Smoke test — full test suite on the real runtime
         run: >-
           docker run --rm --entrypoint ""
