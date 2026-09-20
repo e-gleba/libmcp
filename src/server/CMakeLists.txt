@@ -80,16 +80,14 @@ target_include_directories(
     PRIVATE
         $<TARGET_PROPERTY:jsoncpp_static,INTERFACE_INCLUDE_DIRECTORIES>)
 
-# Static GNU runtimes everywhere except Android: Bionic has no static system
-# libs, and -static pulls compiler-rt builtins with LIBC_N-versioned
+# Static GNU runtimes via genex, Android excluded: Bionic has no static
+# system libs, and -static pulls compiler-rt builtins with LIBC_N-versioned
 # __aeabi_* symbols that fail the shared link (--no-undefined-version).
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
-    target_link_options(
-        mcp_handler
-        PUBLIC
-        "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<CXX_COMPILER_ID:AppleClang>>>:-static-libgcc;-static-libstdc++>"
-    )
-endif()
+target_link_options(
+    mcp_handler
+    PUBLIC
+        "$<$<AND:$<CXX_COMPILER_FRONTEND_VARIANT:GNU>,$<NOT:$<CXX_COMPILER_ID:AppleClang>>,$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>>>:-static-libgcc;-static-libstdc++>"
+)
 
 install(
     TARGETS mcp_handler

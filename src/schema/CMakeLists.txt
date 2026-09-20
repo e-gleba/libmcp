@@ -143,7 +143,7 @@ file(REMOVE "${mcp_ts}.tmp")
 message(CHECK_PASS "done")
 
 message(CHECK_START "quicktype TS->C++ schema-only")
-if(WIN32)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     execute_process(
         COMMAND
             cmd /c ${npm_executable} exec --yes -- quicktype --src-lang
