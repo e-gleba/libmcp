@@ -104,6 +104,8 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22.x
+      # Inspector 2.7.0 CLI has no ping method — 7 probes, each re-connects
+      # stdio, so liveness is covered without it.
       - name: MCP Inspector stdio smoke
         if: runner.os == 'Linux'
         shell: bash
@@ -118,7 +120,6 @@ jobs:
           $cli --method resources/list | jq -e '.result.resources | type == "array"' > /dev/null
           $cli --method resources/templates/list | jq -e '.result.resourceTemplates | type == "array"' > /dev/null
           $cli --method prompts/list | jq -e '.result.prompts | type == "array"' > /dev/null
-          $cli --method ping | jq -e '.result != null' > /dev/null
       - name: Build documentation
         if: matrix.compiler == 'clang'
         run: cmake --build --preset linux_clang_x86_64_docs
@@ -297,7 +298,7 @@ jobs:
           api-level: 30
           arch: x86_64
           target: default
-          disable-animations: true
+          disable-annotations: true
           script: cd ${{ env.ANDROID_PROJECT_DIR }} && ./gradlew --stacktrace :app:connectedDebugAndroidTest --info
       # Diagnostics for the upload below: when the test step fails before AGP
       # writes reports (build error, emulator boot failure) the upload errors
