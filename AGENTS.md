@@ -10,6 +10,10 @@ OpenCode automatically loads this file, root `opencode.json`, and relevant
 Do not ask the user to start or register the project MCP manually: OpenCode starts
 the enabled `libmcp-project` local server from `opencode.json`.
 
+The launcher self-bootstraps an isolated environment into the platform cache
+directory and never writes into the host Python's site-packages. Only stderr is
+used during bootstrap, so stdout stays clean for the MCP protocol.
+
 Before investigating or editing:
 
 1. Confirm `libmcp-project` tools are available.
